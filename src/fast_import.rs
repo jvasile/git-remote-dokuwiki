@@ -37,6 +37,7 @@ fn page_id_to_path(page_id: &str, namespace: Option<&str>) -> String {
 /// Generate fast-import stream for wiki history
 /// If `since_timestamp` is provided, only generate commits newer than that timestamp
 /// If `parent_sha` is provided, use it as the parent for the first incremental commit
+/// Returns the latest revision timestamp that was imported, if any
 pub fn generate<W: Write>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
@@ -44,92 +45,98 @@ pub fn generate<W: Write>(
     parent_sha: Option<&str>,
     verbosity: Verbosity,
     out: &mut W,
-) -> Result<()> {
-    verbosity.info("Fetching page list...");
-
-    // Get all pages
-    let pages = if let Some(ns) = namespace {
-        client.get_page_list(ns)?
-    } else {
-        client.get_all_pages()?
-    };
-
-    verbosity.info(&format!("Found {} pages", pages.len()));
-
-    // For incremental updates, first check if any pages have been modified
-    if let Some(since) = since_timestamp {
-        verbosity.debug(&format!("Looking for pages with revision > {}", since));
-        for p in pages.iter().take(5) {
-            verbosity.debug(&format!("Page {} has revision={}, last_modified={}", p.id, p.revision, p.last_modified));
-        }
-
-        // Use last_modified if revision is 0 (wiki.getAllPages doesn't return rev)
-        let modified_pages: Vec<_> = pages
-            .iter()
-            .filter(|p| {
-                let ts = if p.revision > 0 { p.revision } else { p.last_modified };
-                ts > since
-            })
-            .collect();
-
-        if modified_pages.is_empty() {
-            verbosity.info("No pages modified since last fetch");
-            return Ok(());
-        }
-
-        verbosity.info(&format!("Found {} pages modified since last fetch", modified_pages.len()));
-    }
-
-    // Collect all revisions from all pages
+) -> Result<Option<i64>> {
     let mut all_revisions: Vec<Revision> = Vec::new();
 
-    for page in &pages {
-        // Filter by namespace if specified
-        if let Some(ns) = namespace {
-            if !page.id.starts_with(&format!("{}:", ns)) && page.id != ns {
-                continue;
-            }
+    // For incremental fetches, use getRecentChanges (single API call)
+    // For full fetches, enumerate all pages and their versions
+    if let Some(since) = since_timestamp {
+        verbosity.info("Checking for recent changes...");
+        verbosity.debug(&format!("Looking for revisions > {}", since));
+
+        let changes = client.get_recent_changes(since)?;
+
+        if changes.is_empty() {
+            verbosity.info("No changes since last fetch");
+            return Ok(None);
         }
 
-        // For incremental updates, skip pages that haven't been modified
-        if let Some(since) = since_timestamp {
-            // Use last_modified since wiki.getAllPages doesn't return revision
-            let ts = if page.last_modified > 0 { page.last_modified } else { page.revision };
-            if ts <= since {
-                continue;
-            }
-        }
+        verbosity.info(&format!("Found {} recent changes", changes.len()));
 
-        verbosity.info(&format!("  Fetching history for {}...", page.id));
-
-        match client.get_page_versions(&page.id) {
-            Ok(versions) => {
-                for ver in versions {
-                    all_revisions.push(Revision {
-                        page_id: page.id.clone(),
-                        version: ver.version,
-                        author: if ver.author.is_empty() {
-                            "unknown".to_string()
-                        } else {
-                            ver.author
-                        },
-                        summary: ver.summary,
-                    });
+        for change in changes {
+            // Filter by namespace if specified
+            let page_id = change.page_id.unwrap_or_default();
+            if let Some(ns) = namespace {
+                if !page_id.starts_with(&format!("{}:", ns)) && page_id != ns {
+                    continue;
                 }
             }
-            Err(e) => {
-                eprintln!("Warning: could not get history for {}: {}", page.id, e);
-                // Fall back to just current version
-                all_revisions.push(Revision {
-                    page_id: page.id.clone(),
-                    version: page.revision,
-                    author: if page.author.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        page.author.clone()
-                    },
-                    summary: "current version".to_string(),
-                });
+
+            all_revisions.push(Revision {
+                page_id,
+                version: change.version,
+                author: if change.author.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    change.author
+                },
+                summary: change.summary,
+            });
+        }
+    } else {
+        // Full fetch - get all pages and their complete history
+        verbosity.info("Fetching page list...");
+
+        let pages = if let Some(ns) = namespace {
+            client.get_page_list(ns)?
+        } else {
+            client.get_all_pages()?
+        };
+
+        verbosity.info(&format!("Found {} pages", pages.len()));
+
+        for page in &pages {
+            // Filter by namespace if specified
+            if let Some(ns) = namespace {
+                if !page.id.starts_with(&format!("{}:", ns)) && page.id != ns {
+                    continue;
+                }
+            }
+
+            verbosity.debug(&format!("  Fetching history for {}...", page.id));
+
+            match client.get_page_versions(&page.id) {
+                Ok(versions) => {
+                    if !versions.is_empty() {
+                        verbosity.debug(&format!("    {} has {} versions, latest={}", page.id, versions.len(), versions[0].version));
+                    }
+                    for ver in versions {
+                        all_revisions.push(Revision {
+                            page_id: page.id.clone(),
+                            version: ver.version,
+                            author: if ver.author.is_empty() {
+                                "unknown".to_string()
+                            } else {
+                                ver.author
+                            },
+                            summary: ver.summary,
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not get history for {}: {}", page.id, e);
+                    // Fall back to just current version
+                    all_revisions.push(Revision {
+                        page_id: page.id.clone(),
+                        version: page.revision,
+                        author: if page.author.is_empty() {
+                            "unknown".to_string()
+                        } else {
+                            page.author.clone()
+                        },
+                        summary: "current version".to_string(),
+                    });
+                }
             }
         }
     }
@@ -137,7 +144,7 @@ pub fn generate<W: Write>(
     // Sort by timestamp (oldest first)
     all_revisions.sort_by_key(|r| r.version);
 
-    // Filter to only revisions newer than since_timestamp
+    // Filter to only revisions newer than since_timestamp (for full fetches, this is a no-op)
     let all_revisions: Vec<Revision> = if let Some(since) = since_timestamp {
         all_revisions
             .into_iter()
@@ -151,7 +158,7 @@ pub fn generate<W: Write>(
 
     if all_revisions.is_empty() {
         verbosity.info("No new revisions to import");
-        return Ok(());
+        return Ok(None);
     }
 
     verbosity.info("Generating git history...");
@@ -172,6 +179,7 @@ pub fn generate<W: Write>(
     let mut mark: u64 = 1;
     let mut last_commit_mark: Option<u64> = None;
     let mut commit_count = 0;
+    let mut latest_timestamp: i64 = 0;
 
     let mut timestamps: Vec<i64> = revisions_by_time.keys().copied().collect();
     timestamps.sort();
@@ -277,6 +285,7 @@ pub fn generate<W: Write>(
 
         last_commit_mark = Some(commit_mark);
         commit_count += 1;
+        latest_timestamp = latest_timestamp.max(timestamp);
 
         if commit_count % 100 == 0 {
             verbosity.info(&format!("  {} commits...", commit_count));
@@ -285,5 +294,5 @@ pub fn generate<W: Write>(
 
     verbosity.info(&format!("Generated {} commits", commit_count));
 
-    Ok(())
+    Ok(if latest_timestamp > 0 { Some(latest_timestamp) } else { None })
 }

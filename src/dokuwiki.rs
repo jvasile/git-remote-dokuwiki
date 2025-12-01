@@ -26,7 +26,8 @@ pub struct PageInfo {
 /// A single revision of a page
 #[derive(Debug, Clone)]
 pub struct PageVersion {
-    pub version: i64, // timestamp
+    pub page_id: Option<String>, // Only set when returned from getRecentChanges
+    pub version: i64,            // timestamp
     pub author: String,
     pub summary: String,
     pub size: i64,
@@ -348,6 +349,42 @@ impl DokuWikiClient {
         parse_page_list(result)
     }
 
+    /// Get recent changes since a given timestamp
+    /// Returns a list of (page_id, version, author, summary) for all changes
+    pub fn get_recent_changes(&mut self, since: i64) -> Result<Vec<PageVersion>> {
+        let result = self.call(
+            "wiki.getRecentChanges",
+            vec![Value::Int(since as i32)],
+        )?;
+
+        let arr = match result {
+            Value::Array(arr) => arr,
+            _ => return Err(anyhow!("Expected array from getRecentChanges")),
+        };
+
+        let mut changes = Vec::new();
+        for item in arr {
+            if let Value::Struct(map) = item {
+                let page_id = get_string(&map, "name").unwrap_or_default();
+                let version = get_int(&map, "lastModified").or_else(|| get_datetime(&map, "lastModified")).unwrap_or(0);
+                let author = get_string(&map, "author").unwrap_or_default();
+                // getRecentChanges doesn't return summary, but we can leave it empty
+
+                if !page_id.is_empty() {
+                    changes.push(PageVersion {
+                        page_id: Some(page_id),
+                        version,
+                        author,
+                        summary: String::new(),
+                        size: 0,
+                    });
+                }
+            }
+        }
+
+        Ok(changes)
+    }
+
     /// Get all versions of a page
     pub fn get_page_versions(&mut self, page_id: &str) -> Result<Vec<PageVersion>> {
         let result = self.call(
@@ -369,6 +406,7 @@ impl DokuWikiClient {
                 let size = get_int(&map, "size").unwrap_or(0);
 
                 versions.push(PageVersion {
+                    page_id: None,
                     version,
                     author,
                     summary,
@@ -494,7 +532,9 @@ fn get_datetime(map: &std::collections::BTreeMap<String, Value>, key: &str) -> O
             // iso8601::DateTime contains date and time fields
             // Extract year, month, day from date, and hour, minute, second from time
             if let iso8601::Date::YMD { year, month, day } = dt.date {
-                let days = days_since_epoch(year, month, day);
+                // The formula was off by one day. Use a simpler approach.
+                // Calculate days from 1970-01-01 to the given date
+                let days = days_since_epoch(year, month as u32, day as u32);
                 let seconds = days * 86400
                     + (dt.time.hour as i64 * 3600)
                     + (dt.time.minute as i64 * 60)
@@ -510,15 +550,12 @@ fn get_datetime(map: &std::collections::BTreeMap<String, Value>, key: &str) -> O
 
 fn days_since_epoch(year: i32, month: u32, day: u32) -> i64 {
     // Calculate days since Unix epoch (1970-01-01)
-    let mut y = year as i64;
-    let m = month as i64;
-    let d = day as i64;
-
-    // Adjust for months before March
-    let a = (14 - m) / 12;
-    y = y - a;
-    let m = m + 12 * a - 3;
-
-    let days = d + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 719468;
-    days
+    // Using the formula from https://howardhinnant.github.io/date_algorithms.html
+    let y = if month <= 2 { year - 1 } else { year } as i64;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let m = month as u32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146097 + doe as i64 - 719468) as i64
 }

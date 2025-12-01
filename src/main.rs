@@ -143,17 +143,23 @@ impl RemoteHelper {
         let since_timestamp = self.get_latest_commit_timestamp();
         let parent_sha = self.get_main_sha();
 
-        fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), self.verbosity, out)?;
+        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), self.verbosity, out)?;
+
+        // Store the latest revision timestamp for future incremental fetches
+        if let Some(ts) = latest_revision {
+            self.set_latest_revision_timestamp(ts);
+        }
+
         self.imported = true;
         // Note: 'done' is written after all import commands are processed
         Ok(())
     }
 
-    /// Get the timestamp of the latest commit on main, if any
+    /// Get the timestamp of the latest imported revision
+    /// We store this in git config since the wiki's lastModified field is unreliable
     fn get_latest_commit_timestamp(&self) -> Option<i64> {
-        // Try to get the author timestamp of the latest commit
         let output = ProcessCommand::new("git")
-            .args(["log", "-1", "--format=%at", "refs/heads/main"])
+            .args(["config", "dokuwiki.lastRevision"])
             .output()
             .ok()?;
 
@@ -163,6 +169,13 @@ impl RemoteHelper {
 
         let timestamp_str = String::from_utf8_lossy(&output.stdout);
         timestamp_str.trim().parse().ok()
+    }
+
+    /// Store the timestamp of the latest imported revision
+    fn set_latest_revision_timestamp(&self, timestamp: i64) {
+        let _ = ProcessCommand::new("git")
+            .args(["config", "dokuwiki.lastRevision", &timestamp.to_string()])
+            .output();
     }
 
     /// Get the SHA of the current main branch tip, if any
