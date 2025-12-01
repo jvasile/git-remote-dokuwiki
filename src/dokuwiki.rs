@@ -244,6 +244,14 @@ impl DokuWikiClient {
         self.has_loaded_cookies
     }
 
+    /// Get the wiki host (e.g., "wiki.example.com")
+    pub fn wiki_host(&self) -> &str {
+        self.wiki_url
+            .strip_prefix("https://")
+            .or_else(|| self.wiki_url.strip_prefix("http://"))
+            .unwrap_or(&self.wiki_url)
+    }
+
     /// Ensure we're authenticated, prompting for password if needed
     pub fn ensure_authenticated(&mut self) -> Result<()> {
         // If we have a cached session, trust it
@@ -421,7 +429,8 @@ impl DokuWikiClient {
         for item in arr {
             if let Value::Struct(map) = item {
                 let version = get_int(&map, "version").unwrap_or(0);
-                let author = get_string(&map, "author").unwrap_or_default();
+                // DokuWiki returns "user" not "author" in getPageVersions
+                let author = get_string(&map, "user").unwrap_or_default();
                 let summary = get_string(&map, "sum").unwrap_or_default();
                 let size = get_int(&map, "size").unwrap_or(0);
 

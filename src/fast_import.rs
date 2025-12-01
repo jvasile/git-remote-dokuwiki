@@ -43,6 +43,7 @@ pub fn generate<W: Write>(
     namespace: Option<&str>,
     since_timestamp: Option<i64>,
     parent_sha: Option<&str>,
+    wiki_host: &str,
     verbosity: Verbosity,
     out: &mut W,
 ) -> Result<Option<i64>> {
@@ -259,7 +260,7 @@ pub fn generate<W: Write>(
         mark += 1;
 
         // Format email from author
-        let email = format!("{}@dokuwiki", author.replace(' ', ".").replace(',', ""));
+        let email = format!("{}@{}", author.replace(' ', ".").replace(',', ""), wiki_host);
 
         writeln!(out, "commit refs/dokuwiki/origin/heads/main")?;
         writeln!(out, "mark :{}", commit_mark)?;

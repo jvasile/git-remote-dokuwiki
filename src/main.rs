@@ -158,7 +158,8 @@ impl RemoteHelper {
         let since_timestamp = self.get_latest_commit_timestamp();
         let parent_sha = self.get_main_sha();
 
-        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), self.verbosity, out)?;
+        let wiki_host = self.client.wiki_host().to_string();
+        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), &wiki_host, self.verbosity, out)?;
 
         // Store the latest revision timestamp for future incremental fetches
         if let Some(ts) = latest_revision {
