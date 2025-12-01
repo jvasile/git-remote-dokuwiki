@@ -100,6 +100,7 @@ pub struct DokuWikiClient {
     client: Client,
     cookie_store: Arc<RwLock<CookieStore>>,
     cookie_path: PathBuf,
+    has_loaded_cookies: bool,
     verbosity: Verbosity,
 }
 
@@ -109,23 +110,41 @@ impl DokuWikiClient {
         let wiki_url = wiki_url.trim_end_matches('/').to_string();
         let rpc_url = format!("{}/lib/exe/xmlrpc.php", wiki_url);
 
-        // Determine cookie storage path
-        let cookie_path = get_cookie_path(&wiki_url, user)?;
+        // Load cookies from env var path if set, otherwise from repo path
+        // Do this first because during clone, .git may not exist yet
+        let load_path = get_cookie_load_path();
 
         // Load existing cookies or create empty store
-        let cookie_store = if cookie_path.exists() {
-            let file = fs::File::open(&cookie_path).ok();
-            if let Some(file) = file {
-                let reader = BufReader::new(file);
-                // Use new serde API and load all cookies including expired
-                cookie_store::serde::json::load_all(reader)
-                    .unwrap_or_else(|_| CookieStore::new(None))
+        let mut has_loaded_cookies = false;
+        let cookie_store = if let Ok(ref path) = load_path {
+            if path.exists() {
+                let file = fs::File::open(path).ok();
+                if let Some(file) = file {
+                    let reader = BufReader::new(file);
+                    // Use new serde API and load all cookies including expired
+                    match cookie_store::serde::json::load_all(reader) {
+                        Ok(store) => {
+                            has_loaded_cookies = true;
+                            store
+                        }
+                        Err(_) => CookieStore::new(None),
+                    }
+                } else {
+                    CookieStore::new(None)
+                }
             } else {
                 CookieStore::new(None)
             }
         } else {
             CookieStore::new(None)
         };
+
+        // Determine where to save cookies (repo's .git directory)
+        // This may fail during clone before .git exists, that's OK - we'll try again when saving
+        let cookie_path = get_repo_cookie_path().unwrap_or_else(|_| {
+            // Fall back to load path if available, otherwise a temp location
+            load_path.unwrap_or_else(|_| PathBuf::from(".git/dokuwiki-cookies.json"))
+        });
 
         let cookie_store = Arc::new(RwLock::new(cookie_store));
 
@@ -141,6 +160,7 @@ impl DokuWikiClient {
             client,
             cookie_store,
             cookie_path,
+            has_loaded_cookies,
             verbosity,
         })
     }
@@ -219,9 +239,9 @@ impl DokuWikiClient {
         Ok(())
     }
 
-    /// Check if we have a cached session (cookie file exists)
+    /// Check if we have a cached session (cookies were loaded)
     fn has_cached_session(&self) -> bool {
-        self.cookie_path.exists()
+        self.has_loaded_cookies
     }
 
     /// Ensure we're authenticated, prompting for password if needed
@@ -463,9 +483,8 @@ impl DokuWikiClient {
     }
 }
 
-/// Get the path for storing cookies in .git directory
-fn get_cookie_path(_wiki_url: &str, _user: &str) -> Result<PathBuf> {
-    // Find the .git directory
+/// Get the path in the repo's .git directory for storing cookies
+fn get_repo_cookie_path() -> Result<PathBuf> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--git-dir"])
         .output()
@@ -478,6 +497,16 @@ fn get_cookie_path(_wiki_url: &str, _user: &str) -> Result<PathBuf> {
     let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(PathBuf::from(git_dir).join("dokuwiki-cookies.json"))
 }
+
+/// Get the path to load cookies from (env var override or .git directory)
+fn get_cookie_load_path() -> Result<PathBuf> {
+    // Check for environment variable override (useful for cloning with existing session)
+    if let Ok(cookie_path) = std::env::var("DOKUWIKI_COOKIE_FILE") {
+        return Ok(PathBuf::from(cookie_path));
+    }
+    get_repo_cookie_path()
+}
+
 
 fn parse_page_list(result: Value) -> Result<Vec<PageInfo>> {
     let arr = match result {

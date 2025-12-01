@@ -46,6 +46,12 @@ The tool uses git's credential helper system. On first use, it will prompt for y
 
 You can also set the `DOKUWIKI_PASSWORD` environment variable.
 
+To use a cookie file from a different location (e.g., to share authentication between repos):
+
+```bash
+DOKUWIKI_COOKIE_FILE=/path/to/cookies.json git clone dokuwiki::user@wiki.example.com
+```
+
 ## Verbose output
 
 Use git's `-v` flag for progress info, or `-vv` for debug output:
