@@ -10,6 +10,28 @@ use std::process::Command;
 use crate::dokuwiki::DokuWikiClient;
 use crate::verbosity::Verbosity;
 
+/// Get the timestamp of the latest imported revision from git config
+fn get_last_revision_timestamp() -> Option<i64> {
+    let output = Command::new("git")
+        .args(["config", "dokuwiki.lastRevision"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let timestamp_str = String::from_utf8_lossy(&output.stdout);
+    timestamp_str.trim().parse().ok()
+}
+
+/// Update the last revision timestamp in git config
+fn set_last_revision_timestamp(timestamp: i64) {
+    let _ = Command::new("git")
+        .args(["config", "dokuwiki.lastRevision", &timestamp.to_string()])
+        .output();
+}
+
 /// Convert a file path back to a DokuWiki page ID
 fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
     // Only handle .txt files
@@ -54,6 +76,44 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
     }
 
     verbosity.debug(&format!("Pushing to {}", target_ref));
+
+    // Check that origin/main is an ancestor of HEAD (i.e., we've merged/rebased remote changes)
+    let ancestor_check = Command::new("git")
+        .args(["merge-base", "--is-ancestor", "origin/main", "HEAD"])
+        .output()?;
+
+    if !ancestor_check.status.success() {
+        return Err(anyhow!(
+            "Remote changes not integrated. Please merge or rebase origin/main first."
+        ));
+    }
+
+    // Check for remote changes before pushing
+    // Use since + 1 because getRecentChanges returns changes >= timestamp,
+    // and we've already imported the change at exactly `since`
+    if let Some(since) = get_last_revision_timestamp() {
+        let changes = client.get_recent_changes(since + 1)?;
+
+        // Filter by namespace if specified
+        let relevant_changes: Vec<_> = if let Some(ns) = namespace {
+            changes
+                .into_iter()
+                .filter(|c| {
+                    let page_id = c.page_id.as_deref().unwrap_or("");
+                    page_id.starts_with(&format!("{}:", ns)) || page_id == ns
+                })
+                .collect()
+        } else {
+            changes
+        };
+
+        if !relevant_changes.is_empty() {
+            return Err(anyhow!(
+                "Remote has {} new change(s). Please fetch/pull first.",
+                relevant_changes.len()
+            ));
+        }
+    }
 
     // Find what commits we're pushing: commits on HEAD not on origin/main
     let output = Command::new("git")
@@ -128,6 +188,13 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
             }
         }
     }
+
+    // Update last revision timestamp so future pushes don't see our changes as conflicts
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    set_last_revision_timestamp(now);
 
     Ok(target_ref)
 }
