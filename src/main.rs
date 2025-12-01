@@ -119,7 +119,7 @@ impl RemoteHelper {
         writeln!(out, "import")?;
         writeln!(out, "export")?;
         writeln!(out, "option")?;
-        writeln!(out, "refspec refs/heads/*:refs/remotes/origin/*")?;
+        writeln!(out, "refspec refs/heads/*:refs/dokuwiki/origin/heads/*")?;
         writeln!(out)?;
         Ok(())
     }
@@ -196,7 +196,7 @@ impl RemoteHelper {
     /// Get the SHA of the current main branch tip, if any
     fn get_main_sha(&self) -> Option<String> {
         let output = ProcessCommand::new("git")
-            .args(["rev-parse", "refs/heads/main"])
+            .args(["rev-parse", "refs/dokuwiki/origin/heads/main"])
             .output()
             .ok()?;
 

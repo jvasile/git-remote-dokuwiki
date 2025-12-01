@@ -261,7 +261,7 @@ pub fn generate<W: Write>(
         // Format email from author
         let email = format!("{}@dokuwiki", author.replace(' ', ".").replace(',', ""));
 
-        writeln!(out, "commit refs/heads/main")?;
+        writeln!(out, "commit refs/dokuwiki/origin/heads/main")?;
         writeln!(out, "mark :{}", commit_mark)?;
         writeln!(out, "author {} <{}> {} +0000", author, email, timestamp)?;
         writeln!(out, "committer {} <{}> {} +0000", author, email, timestamp)?;
