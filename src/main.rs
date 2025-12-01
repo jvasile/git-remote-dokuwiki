@@ -200,11 +200,12 @@ impl RemoteHelper {
     ) -> Result<()> {
         self.verbosity.info("Exporting to wiki...");
 
-        // Read fast-export stream from the line iterator
-        fast_export::process(&mut self.client, self.namespace.as_deref(), self.verbosity, lines)?;
+        // Process the push and get the ref that was pushed
+        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), self.verbosity, lines)?;
 
-        // Signal completion
-        writeln!(out, "done")?;
+        // Tell git the push succeeded
+        writeln!(out, "ok {}", pushed_ref)?;
+        writeln!(out)?;
         Ok(())
     }
 }

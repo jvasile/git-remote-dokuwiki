@@ -1,25 +1,14 @@
-//! Parse git fast-export stream and push changes to DokuWiki
+//! Push changes to DokuWiki
+//!
+//! Instead of parsing git's fast-export stream (which includes full tree state),
+//! we use git commands to find what actually changed and push only those files.
 
 use anyhow::{anyhow, Result};
-use std::collections::HashMap;
 use std::io;
+use std::process::Command;
 
 use crate::dokuwiki::DokuWikiClient;
 use crate::verbosity::Verbosity;
-
-/// A file modification from the fast-export stream
-#[derive(Debug)]
-struct FileChange {
-    path: String,
-    content: Option<String>, // None means delete
-}
-
-/// A commit from the fast-export stream
-#[derive(Debug)]
-struct ExportCommit {
-    message: String,
-    files: Vec<FileChange>,
-}
 
 /// Convert a file path back to a DokuWiki page ID
 fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
@@ -37,193 +26,107 @@ fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
     }
 }
 
-/// Parse and process a fast-export stream
+/// Process push by finding changed files and updating the wiki
+/// Consumes the fast-export stream but uses git diff to find actual changes
 pub fn process<I: Iterator<Item = io::Result<String>>>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
     verbosity: Verbosity,
     lines: &mut I,
-) -> Result<()> {
+) -> Result<String> {
+    // We need to consume the fast-export stream even though we won't use it directly
+    // Parse it to find the ref being pushed
+    let mut target_ref = String::new();
 
-    let mut blobs: HashMap<String, String> = HashMap::new(); // mark -> content
-    let mut commits: Vec<ExportCommit> = Vec::new();
-
-    while let Some(line) = lines.next() {
+    for line in lines {
         let line = line?;
-
-        if line.starts_with("blob") {
-            // Read blob
-            let mark = parse_mark(lines)?;
-            let content = read_data(lines)?;
-            blobs.insert(mark, content);
-        } else if line.starts_with("commit ") {
-            // Read commit
-            let commit = parse_commit(lines, &blobs)?;
-            commits.push(commit);
+        if line.starts_with("commit ") {
+            target_ref = line[7..].to_string();
         } else if line == "done" {
             break;
         }
-        // Skip other lines (reset, tag, etc.)
+        // Consume but ignore other lines
     }
 
-    verbosity.info(&format!("Parsed {} commits to push", commits.len()));
+    if target_ref.is_empty() {
+        return Err(anyhow!("No commits to push"));
+    }
 
-    // Push each commit's changes to the wiki
-    for commit in commits {
-        for file in commit.files {
-            if let Some(page_id) = path_to_page_id(&file.path, namespace) {
-                match file.content {
-                    Some(content) => {
-                        verbosity.info(&format!("  Updating {}...", page_id));
-                        client.put_page(&page_id, &content, &commit.message)?;
-                    }
-                    None => {
-                        // Delete = save empty content
+    verbosity.debug(&format!("Pushing to {}", target_ref));
+
+    // Find what commits we're pushing: commits on HEAD not on origin/main
+    let output = Command::new("git")
+        .args(["rev-list", "--reverse", "origin/main..HEAD"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(anyhow!("Failed to get commit list"));
+    }
+
+    let commits: Vec<&str> = std::str::from_utf8(&output.stdout)?
+        .lines()
+        .collect();
+
+    if commits.is_empty() {
+        verbosity.info("No commits to push");
+        return Ok(target_ref);
+    }
+
+    verbosity.info(&format!("Pushing {} commit(s)", commits.len()));
+
+    for commit in &commits {
+        // Get commit message
+        let msg_output = Command::new("git")
+            .args(["log", "-1", "--format=%s", commit])
+            .output()?;
+        let message = std::str::from_utf8(&msg_output.stdout)?.trim().to_string();
+
+        // Get changed files in this commit
+        let diff_output = Command::new("git")
+            .args(["diff-tree", "--no-commit-id", "--name-status", "-r", commit])
+            .output()?;
+
+        if !diff_output.status.success() {
+            return Err(anyhow!("Failed to get diff for commit {}", commit));
+        }
+
+        let changes = std::str::from_utf8(&diff_output.stdout)?;
+
+        for line in changes.lines() {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+
+            let status = parts[0];
+            let path = parts[1];
+
+            if let Some(page_id) = path_to_page_id(path, namespace) {
+                match status {
+                    "D" => {
+                        // Delete
                         verbosity.info(&format!("  Deleting {}...", page_id));
-                        client.put_page(&page_id, "", &format!("Deleted: {}", commit.message))?;
+                        client.put_page(&page_id, "", &format!("Deleted: {}", message))?;
+                    }
+                    "A" | "M" => {
+                        // Add or modify - get the content from git
+                        let content_output = Command::new("git")
+                            .args(["show", &format!("{}:{}", commit, path)])
+                            .output()?;
+
+                        if content_output.status.success() {
+                            let content = String::from_utf8_lossy(&content_output.stdout);
+                            verbosity.info(&format!("  Updating {}...", page_id));
+                            client.put_page(&page_id, &content, &message)?;
+                        }
+                    }
+                    _ => {
+                        verbosity.debug(&format!("  Skipping {} (status: {})", path, status));
                     }
                 }
             }
         }
     }
 
-    Ok(())
-}
-
-fn parse_mark<I: Iterator<Item = io::Result<String>>>(lines: &mut I) -> Result<String> {
-    while let Some(line) = lines.next() {
-        let line = line?;
-        if line.starts_with("mark :") {
-            return Ok(line[6..].to_string());
-        }
-        if line.starts_with("data ") {
-            // No mark, generate a placeholder
-            // But we need to consume the data first
-            let size: usize = line[5..].parse()?;
-            let mut buf = vec![0u8; size];
-            // This is tricky with line iterators...
-            // For now, return error
-            return Err(anyhow!("Blob without mark not supported"));
-        }
-    }
-    Err(anyhow!("Unexpected end of stream looking for mark"))
-}
-
-fn read_data<I: Iterator<Item = io::Result<String>>>(lines: &mut I) -> Result<String> {
-    while let Some(line) = lines.next() {
-        let line = line?;
-        if line.starts_with("data ") {
-            let size: usize = line[5..].parse()?;
-
-            // Read exactly `size` bytes
-            // Since we're using line iterator, we need to accumulate lines
-            let mut content = String::new();
-            let mut remaining = size;
-
-            while remaining > 0 {
-                if let Some(next_line) = lines.next() {
-                    let next_line = next_line?;
-                    if content.is_empty() {
-                        content = next_line;
-                    } else {
-                        content.push('\n');
-                        content.push_str(&next_line);
-                    }
-                    // Account for the newline that was stripped
-                    remaining = remaining.saturating_sub(content.len() + 1);
-                } else {
-                    break;
-                }
-            }
-
-            // Trim to exact size
-            if content.len() > size {
-                content.truncate(size);
-            }
-
-            return Ok(content);
-        }
-    }
-    Err(anyhow!("Unexpected end of stream looking for data"))
-}
-
-fn parse_commit<I: Iterator<Item = io::Result<String>>>(
-    lines: &mut I,
-    blobs: &HashMap<String, String>,
-) -> Result<ExportCommit> {
-    let mut message = String::new();
-    let mut files: Vec<FileChange> = Vec::new();
-
-    while let Some(line) = lines.next() {
-        let line = line?;
-
-        if line.is_empty() {
-            // End of commit
-            break;
-        } else if line.starts_with("mark ") {
-            // Skip commit mark
-        } else if line.starts_with("author ") || line.starts_with("committer ") {
-            // Skip author/committer lines
-        } else if line.starts_with("from ") || line.starts_with("merge ") {
-            // Skip parent refs
-        } else if line.starts_with("data ") {
-            let size: usize = line[5..].parse()?;
-
-            // Read commit message
-            let mut msg = String::new();
-            let mut remaining = size;
-
-            while remaining > 0 {
-                if let Some(next_line) = lines.next() {
-                    let next_line = next_line?;
-                    if msg.is_empty() {
-                        msg = next_line;
-                    } else {
-                        msg.push('\n');
-                        msg.push_str(&next_line);
-                    }
-                    remaining = remaining.saturating_sub(msg.len() + 1);
-                } else {
-                    break;
-                }
-            }
-
-            if msg.len() > size {
-                msg.truncate(size);
-            }
-
-            message = msg;
-        } else if line.starts_with("M ") {
-            // File modification: M <mode> <dataref> <path>
-            let parts: Vec<&str> = line.splitn(4, ' ').collect();
-            if parts.len() >= 4 {
-                let dataref = parts[2];
-                let path = parts[3].to_string();
-
-                let content = if dataref.starts_with(':') {
-                    // Reference to a blob by mark
-                    blobs.get(&dataref[1..]).cloned()
-                } else {
-                    // Inline data or SHA - not supported yet
-                    None
-                };
-
-                if let Some(content) = content {
-                    files.push(FileChange {
-                        path,
-                        content: Some(content),
-                    });
-                }
-            }
-        } else if line.starts_with("D ") {
-            // File deletion: D <path>
-            let path = line[2..].to_string();
-            files.push(FileChange {
-                path,
-                content: None,
-            });
-        }
-    }
-
-    Ok(ExportCommit { message, files })
+    Ok(target_ref)
 }
