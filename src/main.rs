@@ -105,6 +105,7 @@ impl RemoteHelper {
         writeln!(out, "import")?;
         writeln!(out, "export")?;
         writeln!(out, "option")?;
+        writeln!(out, "refspec refs/heads/*:refs/remotes/origin/*")?;
         writeln!(out)?;
         Ok(())
     }
