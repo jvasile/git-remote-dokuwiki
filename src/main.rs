@@ -11,6 +11,9 @@ mod dokuwiki;
 mod fast_export;
 mod fast_import;
 mod protocol;
+mod verbosity;
+
+use verbosity::Verbosity;
 
 use anyhow::{Context, Result};
 use std::env;
@@ -31,8 +34,9 @@ fn main() -> Result<()> {
 
     let _remote_name = &args[1];
     let url = &args[2];
+    let verbosity = Verbosity::from_env();
 
-    let mut helper = RemoteHelper::new(url)?;
+    let mut helper = RemoteHelper::new(url, verbosity)?;
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -49,6 +53,9 @@ fn main() -> Result<()> {
             }
             Command::List => {
                 helper.list(&mut stdout)?;
+            }
+            Command::Option { name, value } => {
+                helper.set_option(&name, &value, &mut stdout)?;
             }
             Command::Import(ref_name) => {
                 in_import_batch = true;
@@ -81,22 +88,41 @@ struct RemoteHelper {
     client: DokuWikiClient,
     namespace: Option<String>,
     imported: bool,
+    verbosity: Verbosity,
 }
 
 impl RemoteHelper {
-    fn new(url: &str) -> Result<Self> {
+    fn new(url: &str, verbosity: Verbosity) -> Result<Self> {
         let (wiki_url, user, namespace) = parse_url(url)?;
 
-        let mut client = DokuWikiClient::new(&wiki_url, &user)?;
+        let mut client = DokuWikiClient::new(&wiki_url, &user, verbosity)?;
         client.ensure_authenticated()?;
 
-        Ok(Self { client, namespace, imported: false })
+        Ok(Self { client, namespace, imported: false, verbosity })
     }
 
     fn capabilities<W: Write>(&self, out: &mut W) -> Result<()> {
         writeln!(out, "import")?;
         writeln!(out, "export")?;
+        writeln!(out, "option")?;
         writeln!(out)?;
+        Ok(())
+    }
+
+    fn set_option<W: Write>(&self, name: &str, value: &str, out: &mut W) -> Result<()> {
+        match name {
+            "verbosity" => {
+                // git sends: no flag=1, -v=2, -vv=3
+                if let Ok(level) = value.parse::<u8>() {
+                    self.verbosity.set_level(level);
+                }
+                writeln!(out, "ok")?;
+            }
+            _ => {
+                // Unsupported option
+                writeln!(out, "unsupported")?;
+            }
+        }
         Ok(())
     }
 
@@ -110,20 +136,14 @@ impl RemoteHelper {
 
     fn import<W: Write>(&mut self, ref_name: &str, out: &mut W) -> Result<()> {
         if self.imported {
-            eprintln!("Already imported, skipping {}...", ref_name);
             return Ok(());
         }
 
-        // Check if we already have commits - get the latest timestamp
+        // Check if we already have commits - get the latest timestamp and SHA
         let since_timestamp = self.get_latest_commit_timestamp();
+        let parent_sha = self.get_main_sha();
 
-        if let Some(ts) = since_timestamp {
-            eprintln!("Fetching changes since timestamp {}...", ts);
-        } else {
-            eprintln!("Importing {}...", ref_name);
-        }
-
-        fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, out)?;
+        fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), self.verbosity, out)?;
         self.imported = true;
         // Note: 'done' is written after all import commands are processed
         Ok(())
@@ -145,15 +165,29 @@ impl RemoteHelper {
         timestamp_str.trim().parse().ok()
     }
 
+    /// Get the SHA of the current main branch tip, if any
+    fn get_main_sha(&self) -> Option<String> {
+        let output = ProcessCommand::new("git")
+            .args(["rev-parse", "refs/heads/main"])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     fn export<W: Write, I: Iterator<Item = io::Result<String>>>(
         &mut self,
         out: &mut W,
         lines: &mut I,
     ) -> Result<()> {
-        eprintln!("Exporting to wiki...");
+        self.verbosity.info("Exporting to wiki...");
 
         // Read fast-export stream from the line iterator
-        fast_export::process(&mut self.client, self.namespace.as_deref(), lines)?;
+        fast_export::process(&mut self.client, self.namespace.as_deref(), self.verbosity, lines)?;
 
         // Signal completion
         writeln!(out, "done")?;

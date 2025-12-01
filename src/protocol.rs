@@ -11,6 +11,8 @@ pub enum Command {
     Import(String),
     /// Export (read fast-export stream)
     Export,
+    /// Option setting (e.g., "option verbosity 1")
+    Option { name: String, value: String },
     /// Empty line (end of batch)
     Empty,
     /// Unknown command
@@ -34,6 +36,13 @@ pub fn parse_command(line: &str) -> Command {
         "list" => Command::List,
         "import" => Command::Import(arg),
         "export" => Command::Export,
+        "option" => {
+            // Parse "option name value"
+            let mut option_parts = arg.splitn(2, ' ');
+            let name = option_parts.next().unwrap_or("").to_string();
+            let value = option_parts.next().unwrap_or("").to_string();
+            Command::Option { name, value }
+        }
         _ => Command::Unknown(line.to_string()),
     }
 }

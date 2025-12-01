@@ -6,10 +6,12 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderValue, CONTENT_TYPE, COOKIE, SET_COOKIE};
 use std::error::Error as StdError;
 use std::fs;
-use std::io::{BufReader, BufWriter, Cursor, Read};
+use std::io::{BufReader, BufWriter, Cursor};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use xmlrpc::{Request as XmlRpcRequest, Transport, Value};
+
+use crate::verbosity::Verbosity;
 
 /// Information about a wiki page
 #[derive(Debug, Clone)]
@@ -97,11 +99,12 @@ pub struct DokuWikiClient {
     client: Client,
     cookie_store: Arc<RwLock<CookieStore>>,
     cookie_path: PathBuf,
+    verbosity: Verbosity,
 }
 
 impl DokuWikiClient {
     /// Create a new client for the given wiki URL
-    pub fn new(wiki_url: &str, user: &str) -> Result<Self> {
+    pub fn new(wiki_url: &str, user: &str, verbosity: Verbosity) -> Result<Self> {
         let wiki_url = wiki_url.trim_end_matches('/').to_string();
         let rpc_url = format!("{}/lib/exe/xmlrpc.php", wiki_url);
 
@@ -137,6 +140,7 @@ impl DokuWikiClient {
             client,
             cookie_store,
             cookie_path,
+            verbosity,
         })
     }
 
@@ -197,7 +201,7 @@ impl DokuWikiClient {
 
     /// Re-authenticate after a session expiry
     fn reauthenticate(&mut self) -> Result<()> {
-        eprintln!("Session expired, re-authenticating...");
+        self.verbosity.info("Session expired, re-authenticating...");
 
         // Clear old cookies
         if self.cookie_path.exists() {
@@ -223,7 +227,7 @@ impl DokuWikiClient {
     pub fn ensure_authenticated(&mut self) -> Result<()> {
         // If we have a cached session, trust it
         if self.has_cached_session() {
-            eprintln!("Using cached session for {}", self.user);
+            self.verbosity.info(&format!("Using cached session for {}", self.user));
             return Ok(());
         }
 
@@ -249,7 +253,7 @@ impl DokuWikiClient {
             } else {
                 self.user.clone()
             };
-            eprintln!("Using credentials from environment");
+            self.verbosity.info("Using credentials from environment");
             return Ok((user, password));
         }
 
@@ -448,7 +452,7 @@ fn parse_page_list(result: Value) -> Result<Vec<PageInfo>> {
         if let Value::Struct(map) = item {
             let id = get_string(&map, "id").unwrap_or_default();
             let revision = get_int(&map, "rev").or_else(|| get_int(&map, "version")).unwrap_or(0);
-            let last_modified = get_int(&map, "mtime").or_else(|| get_int(&map, "lastModified")).unwrap_or(0);
+            let last_modified = get_datetime(&map, "lastModified").or_else(|| get_int(&map, "mtime")).unwrap_or(0);
             let author = get_string(&map, "author").unwrap_or_default();
             let size = get_int(&map, "size").unwrap_or(0);
 
@@ -480,4 +484,41 @@ fn get_int(map: &std::collections::BTreeMap<String, Value>, key: &str) -> Option
         Some(Value::Int64(i)) => Some(*i),
         _ => None,
     }
+}
+
+fn get_datetime(map: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<i64> {
+    match map.get(key) {
+        Some(Value::Int(i)) => Some(*i as i64),
+        Some(Value::Int64(i)) => Some(*i),
+        Some(Value::DateTime(dt)) => {
+            // iso8601::DateTime contains date and time fields
+            // Extract year, month, day from date, and hour, minute, second from time
+            if let iso8601::Date::YMD { year, month, day } = dt.date {
+                let days = days_since_epoch(year, month, day);
+                let seconds = days * 86400
+                    + (dt.time.hour as i64 * 3600)
+                    + (dt.time.minute as i64 * 60)
+                    + (dt.time.second as i64);
+                Some(seconds)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn days_since_epoch(year: i32, month: u32, day: u32) -> i64 {
+    // Calculate days since Unix epoch (1970-01-01)
+    let mut y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+
+    // Adjust for months before March
+    let a = (14 - m) / 12;
+    y = y - a;
+    let m = m + 12 * a - 3;
+
+    let days = d + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 719468;
+    days
 }

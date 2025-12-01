@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::io;
 
 use crate::dokuwiki::DokuWikiClient;
+use crate::verbosity::Verbosity;
 
 /// A file modification from the fast-export stream
 #[derive(Debug)]
@@ -40,6 +41,7 @@ fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
 pub fn process<I: Iterator<Item = io::Result<String>>>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
+    verbosity: Verbosity,
     lines: &mut I,
 ) -> Result<()> {
 
@@ -64,7 +66,7 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
         // Skip other lines (reset, tag, etc.)
     }
 
-    eprintln!("Parsed {} commits to push", commits.len());
+    verbosity.info(&format!("Parsed {} commits to push", commits.len()));
 
     // Push each commit's changes to the wiki
     for commit in commits {
@@ -72,12 +74,12 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
             if let Some(page_id) = path_to_page_id(&file.path, namespace) {
                 match file.content {
                     Some(content) => {
-                        eprintln!("  Updating {}...", page_id);
+                        verbosity.info(&format!("  Updating {}...", page_id));
                         client.put_page(&page_id, &content, &commit.message)?;
                     }
                     None => {
                         // Delete = save empty content
-                        eprintln!("  Deleting {}...", page_id);
+                        verbosity.info(&format!("  Deleting {}...", page_id));
                         client.put_page(&page_id, "", &format!("Deleted: {}", commit.message))?;
                     }
                 }

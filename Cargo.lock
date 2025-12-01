@@ -328,6 +328,7 @@ dependencies = [
  "anyhow",
  "cookie_store 0.21.1",
  "dirs",
+ "iso8601",
  "reqwest",
  "rpassword",
  "serde",

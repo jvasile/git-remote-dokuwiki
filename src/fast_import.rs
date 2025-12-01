@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use crate::dokuwiki::DokuWikiClient;
+use crate::verbosity::Verbosity;
 
 /// A revision to be imported
 #[derive(Debug)]
@@ -35,13 +36,16 @@ fn page_id_to_path(page_id: &str, namespace: Option<&str>) -> String {
 
 /// Generate fast-import stream for wiki history
 /// If `since_timestamp` is provided, only generate commits newer than that timestamp
+/// If `parent_sha` is provided, use it as the parent for the first incremental commit
 pub fn generate<W: Write>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
     since_timestamp: Option<i64>,
+    parent_sha: Option<&str>,
+    verbosity: Verbosity,
     out: &mut W,
 ) -> Result<()> {
-    eprintln!("Fetching page list...");
+    verbosity.info("Fetching page list...");
 
     // Get all pages
     let pages = if let Some(ns) = namespace {
@@ -50,23 +54,30 @@ pub fn generate<W: Write>(
         client.get_all_pages()?
     };
 
-    eprintln!("Found {} pages", pages.len());
+    verbosity.info(&format!("Found {} pages", pages.len()));
 
     // For incremental updates, first check if any pages have been modified
     if let Some(since) = since_timestamp {
-        let dominated_pages: Vec<_> = pages
+        verbosity.debug(&format!("Looking for pages with revision > {}", since));
+        for p in pages.iter().take(5) {
+            verbosity.debug(&format!("Page {} has revision={}, last_modified={}", p.id, p.revision, p.last_modified));
+        }
+
+        // Use last_modified if revision is 0 (wiki.getAllPages doesn't return rev)
+        let modified_pages: Vec<_> = pages
             .iter()
-            .filter(|p| p.revision > since)
+            .filter(|p| {
+                let ts = if p.revision > 0 { p.revision } else { p.last_modified };
+                ts > since
+            })
             .collect();
 
-        if dominated_pages.is_empty() {
-            eprintln!("No pages modified since last fetch");
-            eprintln!("Found 0 total revisions");
-            eprintln!("No new revisions to import");
+        if modified_pages.is_empty() {
+            verbosity.info("No pages modified since last fetch");
             return Ok(());
         }
 
-        eprintln!("Found {} pages modified since last fetch", dominated_pages.len());
+        verbosity.info(&format!("Found {} pages modified since last fetch", modified_pages.len()));
     }
 
     // Collect all revisions from all pages
@@ -82,12 +93,14 @@ pub fn generate<W: Write>(
 
         // For incremental updates, skip pages that haven't been modified
         if let Some(since) = since_timestamp {
-            if page.revision <= since {
+            // Use last_modified since wiki.getAllPages doesn't return revision
+            let ts = if page.last_modified > 0 { page.last_modified } else { page.revision };
+            if ts <= since {
                 continue;
             }
         }
 
-        eprintln!("  Fetching history for {}...", page.id);
+        verbosity.info(&format!("  Fetching history for {}...", page.id));
 
         match client.get_page_versions(&page.id) {
             Ok(versions) => {
@@ -105,7 +118,7 @@ pub fn generate<W: Write>(
                 }
             }
             Err(e) => {
-                eprintln!("    Warning: could not get history: {}", e);
+                eprintln!("Warning: could not get history for {}: {}", page.id, e);
                 // Fall back to just current version
                 all_revisions.push(Revision {
                     page_id: page.id.clone(),
@@ -134,14 +147,14 @@ pub fn generate<W: Write>(
         all_revisions
     };
 
-    eprintln!("Found {} total revisions", all_revisions.len());
+    verbosity.info(&format!("Found {} total revisions", all_revisions.len()));
 
     if all_revisions.is_empty() {
-        eprintln!("No new revisions to import");
+        verbosity.info("No new revisions to import");
         return Ok(());
     }
 
-    eprintln!("Generating git history...");
+    verbosity.info("Generating git history...");
 
     // Group revisions by timestamp
     let mut revisions_by_time: HashMap<i64, Vec<&Revision>> = HashMap::new();
@@ -159,7 +172,6 @@ pub fn generate<W: Write>(
     let mut mark: u64 = 1;
     let mut last_commit_mark: Option<u64> = None;
     let mut commit_count = 0;
-    let is_incremental = since_timestamp.is_some();
 
     let mut timestamps: Vec<i64> = revisions_by_time.keys().copied().collect();
     timestamps.sort();
@@ -251,9 +263,9 @@ pub fn generate<W: Write>(
 
         if let Some(parent) = last_commit_mark {
             writeln!(out, "from :{}", parent)?;
-        } else if is_incremental {
-            // First commit in incremental update - parent is existing main
-            writeln!(out, "from refs/heads/main")?;
+        } else if let Some(sha) = parent_sha {
+            // First commit in incremental update - parent is existing main SHA
+            writeln!(out, "from {}", sha)?;
         }
 
         // Write file modifications
@@ -267,11 +279,11 @@ pub fn generate<W: Write>(
         commit_count += 1;
 
         if commit_count % 100 == 0 {
-            eprintln!("  {} commits...", commit_count);
+            verbosity.info(&format!("  {} commits...", commit_count));
         }
     }
 
-    eprintln!("Generated {} commits", commit_count);
+    verbosity.info(&format!("Generated {} commits", commit_count));
 
     Ok(())
 }
