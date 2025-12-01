@@ -8,6 +8,7 @@
 //! ```
 
 mod dokuwiki;
+mod fast_export;
 mod fast_import;
 mod protocol;
 
@@ -37,7 +38,9 @@ fn main() -> Result<()> {
     let mut stdout = io::stdout();
     let mut in_import_batch = false;
 
-    for line in stdin.lock().lines() {
+    let mut lines = stdin.lock().lines();
+
+    while let Some(line) = lines.next() {
         let line = line.context("Failed to read from stdin")?;
 
         match parse_command(&line) {
@@ -52,7 +55,9 @@ fn main() -> Result<()> {
                 helper.import(&ref_name, &mut stdout)?;
             }
             Command::Export => {
-                helper.export(&mut stdout)?;
+                // Export reads the fast-export stream directly from the remaining stdin
+                helper.export(&mut stdout, &mut lines)?;
+                return Ok(());
             }
             Command::Empty => {
                 // Empty line ends a batch
@@ -118,7 +123,7 @@ impl RemoteHelper {
             eprintln!("Importing {}...", ref_name);
         }
 
-        fast_import::generate(&self.client, self.namespace.as_deref(), since_timestamp, out)?;
+        fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, out)?;
         self.imported = true;
         // Note: 'done' is written after all import commands are processed
         Ok(())
@@ -140,9 +145,18 @@ impl RemoteHelper {
         timestamp_str.trim().parse().ok()
     }
 
-    fn export<W: Write>(&mut self, _out: &mut W) -> Result<()> {
-        // TODO: Read fast-export stream from stdin and push to wiki
-        eprintln!("Export not yet implemented");
+    fn export<W: Write, I: Iterator<Item = io::Result<String>>>(
+        &mut self,
+        out: &mut W,
+        lines: &mut I,
+    ) -> Result<()> {
+        eprintln!("Exporting to wiki...");
+
+        // Read fast-export stream from the line iterator
+        fast_export::process(&mut self.client, self.namespace.as_deref(), lines)?;
+
+        // Signal completion
+        writeln!(out, "done")?;
         Ok(())
     }
 }

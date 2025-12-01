@@ -113,7 +113,9 @@ impl DokuWikiClient {
             let file = fs::File::open(&cookie_path).ok();
             if let Some(file) = file {
                 let reader = BufReader::new(file);
-                CookieStore::load_json(reader).unwrap_or_else(|_| CookieStore::new(None))
+                // Use new serde API and load all cookies including expired
+                cookie_store::serde::json::load_all(reader)
+                    .unwrap_or_else(|_| CookieStore::new(None))
             } else {
                 CookieStore::new(None)
             }
@@ -147,18 +149,19 @@ impl DokuWikiClient {
         let store = self.cookie_store.read().unwrap();
         let file = fs::File::create(&self.cookie_path)?;
         let mut writer = BufWriter::new(file);
-        store
-            .save_json(&mut writer)
+
+        // Use the new serde API and include non-persistent (session) cookies
+        cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut writer)
             .map_err(|e| anyhow!("Failed to save cookies: {}", e))?;
 
         Ok(())
     }
 
-    /// Make an XML-RPC call
-    pub fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
+    /// Make an XML-RPC call (internal, no retry)
+    fn call_inner(&self, method: &str, params: &[Value]) -> Result<Value> {
         let mut request = XmlRpcRequest::new(method);
         for param in params {
-            request = request.arg(param);
+            request = request.arg(param.clone());
         }
 
         // Create transport with cookies
@@ -175,19 +178,51 @@ impl DokuWikiClient {
         Ok(value)
     }
 
-    /// Check if we have a valid session
-    fn has_valid_session(&self) -> bool {
-        // Try a simple API call that requires authentication
-        match self.call("dokuwiki.getVersion", vec![]) {
-            Ok(_) => true,
-            Err(_) => false,
+    /// Make an XML-RPC call with automatic re-auth on 401
+    pub fn call(&mut self, method: &str, params: Vec<Value>) -> Result<Value> {
+        match self.call_inner(method, &params) {
+            Ok(value) => Ok(value),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("401") || err_str.contains("Unauthorized") {
+                    // Session expired, re-authenticate and retry
+                    self.reauthenticate()?;
+                    self.call_inner(method, &params)
+                } else {
+                    Err(e)
+                }
+            }
         }
+    }
+
+    /// Re-authenticate after a session expiry
+    fn reauthenticate(&mut self) -> Result<()> {
+        eprintln!("Session expired, re-authenticating...");
+
+        // Clear old cookies
+        if self.cookie_path.exists() {
+            let _ = std::fs::remove_file(&self.cookie_path);
+        }
+        *self.cookie_store.write().unwrap() = CookieStore::new(None);
+
+        // Get fresh credentials and login
+        let (user, password) = self.get_credentials()?;
+        self.login(&user, &password)?;
+        self.user = user;
+        self.save_cookies()?;
+
+        Ok(())
+    }
+
+    /// Check if we have a cached session (cookie file exists)
+    fn has_cached_session(&self) -> bool {
+        self.cookie_path.exists()
     }
 
     /// Ensure we're authenticated, prompting for password if needed
     pub fn ensure_authenticated(&mut self) -> Result<()> {
-        // First check if existing cookies work
-        if self.has_valid_session() {
+        // If we have a cached session, trust it
+        if self.has_cached_session() {
             eprintln!("Using cached session for {}", self.user);
             return Ok(());
         }
@@ -277,10 +312,8 @@ impl DokuWikiClient {
 
     /// Login to the wiki
     fn login(&self, user: &str, password: &str) -> Result<()> {
-        let result = self.call(
-            "dokuwiki.login",
-            vec![Value::String(user.to_string()), Value::String(password.to_string())],
-        )?;
+        let params = vec![Value::String(user.to_string()), Value::String(password.to_string())];
+        let result = self.call_inner("dokuwiki.login", &params)?;
 
         match result {
             Value::Bool(true) => Ok(()),
@@ -290,13 +323,13 @@ impl DokuWikiClient {
     }
 
     /// Get list of all pages
-    pub fn get_all_pages(&self) -> Result<Vec<PageInfo>> {
+    pub fn get_all_pages(&mut self) -> Result<Vec<PageInfo>> {
         let result = self.call("wiki.getAllPages", vec![])?;
         parse_page_list(result)
     }
 
     /// Get list of pages in a namespace
-    pub fn get_page_list(&self, namespace: &str) -> Result<Vec<PageInfo>> {
+    pub fn get_page_list(&mut self, namespace: &str) -> Result<Vec<PageInfo>> {
         let result = self.call(
             "dokuwiki.getPagelist",
             vec![
@@ -312,7 +345,7 @@ impl DokuWikiClient {
     }
 
     /// Get all versions of a page
-    pub fn get_page_versions(&self, page_id: &str) -> Result<Vec<PageVersion>> {
+    pub fn get_page_versions(&mut self, page_id: &str) -> Result<Vec<PageVersion>> {
         let result = self.call(
             "wiki.getPageVersions",
             vec![Value::String(page_id.to_string()), Value::Int(0)],
@@ -344,7 +377,7 @@ impl DokuWikiClient {
     }
 
     /// Get page content at a specific version
-    pub fn get_page_version(&self, page_id: &str, version: i64) -> Result<String> {
+    pub fn get_page_version(&mut self, page_id: &str, version: i64) -> Result<String> {
         let result = self.call(
             "wiki.getPageVersion",
             vec![Value::String(page_id.to_string()), Value::Int(version as i32)],
@@ -357,7 +390,7 @@ impl DokuWikiClient {
     }
 
     /// Get current page content
-    pub fn get_page(&self, page_id: &str) -> Result<String> {
+    pub fn get_page(&mut self, page_id: &str) -> Result<String> {
         let result = self.call("wiki.getPage", vec![Value::String(page_id.to_string())])?;
 
         match result {
@@ -367,7 +400,7 @@ impl DokuWikiClient {
     }
 
     /// Save page content
-    pub fn put_page(&self, page_id: &str, content: &str, summary: &str) -> Result<()> {
+    pub fn put_page(&mut self, page_id: &str, content: &str, summary: &str) -> Result<()> {
         let attrs = vec![("sum".to_string(), Value::String(summary.to_string()))]
             .into_iter()
             .collect();
@@ -388,23 +421,20 @@ impl DokuWikiClient {
     }
 }
 
-/// Get the path for storing cookies for a wiki/user
-fn get_cookie_path(wiki_url: &str, user: &str) -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow!("Could not determine config directory"))?
-        .join("git-remote-dokuwiki");
+/// Get the path for storing cookies in .git directory
+fn get_cookie_path(_wiki_url: &str, _user: &str) -> Result<PathBuf> {
+    // Find the .git directory
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .context("Failed to find .git directory")?;
 
-    // Hash the wiki URL to create a safe filename
-    let url_hash = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        wiki_url.hash(&mut hasher);
-        user.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
-    };
+    if !output.status.success() {
+        return Err(anyhow!("Not in a git repository"));
+    }
 
-    Ok(config_dir.join(format!("cookies_{}.json", url_hash)))
+    let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(PathBuf::from(git_dir).join("dokuwiki-cookies.json"))
 }
 
 fn parse_page_list(result: Value) -> Result<Vec<PageInfo>> {

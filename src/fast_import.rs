@@ -36,7 +36,7 @@ fn page_id_to_path(page_id: &str, namespace: Option<&str>) -> String {
 /// Generate fast-import stream for wiki history
 /// If `since_timestamp` is provided, only generate commits newer than that timestamp
 pub fn generate<W: Write>(
-    client: &DokuWikiClient,
+    client: &mut DokuWikiClient,
     namespace: Option<&str>,
     since_timestamp: Option<i64>,
     out: &mut W,

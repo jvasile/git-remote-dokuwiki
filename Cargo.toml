@@ -27,7 +27,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # Cookie persistence
-cookie_store = "0.21"
+cookie_store = { version = "0.21", features = ["serde_json"] }
 
 # For TTY password prompts
 rpassword = "7.3"
