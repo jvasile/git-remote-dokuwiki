@@ -48,8 +48,9 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
         // Consume but ignore other lines
     }
 
+    // If no commits in the stream, nothing to push - that's OK
     if target_ref.is_empty() {
-        return Err(anyhow!("No commits to push"));
+        return Ok("refs/heads/main".to_string());
     }
 
     verbosity.debug(&format!("Pushing to {}", target_ref));
