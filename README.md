@@ -1,6 +1,7 @@
 # git-remote-dokuwiki
 
-A git remote helper that allows you to use git to interact with a DokuWiki.
+A git remote helper that allows you to use git to interact with a DokuWiki.  You
+can fetch, edit, and push, just like a real git repo.
 
 ## Installation
 
