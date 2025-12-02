@@ -101,18 +101,19 @@ fn main() -> Result<()> {
 struct RemoteHelper {
     client: DokuWikiClient,
     namespace: Option<String>,
+    extension: String,
     imported: bool,
     verbosity: Verbosity,
 }
 
 impl RemoteHelper {
     fn new(url: &str, verbosity: Verbosity) -> Result<Self> {
-        let (wiki_url, user, namespace) = parse_url(url)?;
+        let (wiki_url, user, namespace, extension) = parse_url(url)?;
 
         let mut client = DokuWikiClient::new(&wiki_url, &user, verbosity)?;
         client.ensure_authenticated()?;
 
-        Ok(Self { client, namespace, imported: false, verbosity })
+        Ok(Self { client, namespace, extension, imported: false, verbosity })
     }
 
     fn capabilities<W: Write>(&self, out: &mut W) -> Result<()> {
@@ -179,7 +180,7 @@ impl RemoteHelper {
         let parent_sha = self.get_main_sha();
 
         let wiki_host = self.client.wiki_host().to_string();
-        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), &wiki_host, self.verbosity, out)?;
+        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), &wiki_host, &self.extension, self.verbosity, out)?;
 
         // Store the latest revision timestamp for future incremental fetches
         if let Some(ts) = latest_revision {
@@ -236,7 +237,7 @@ impl RemoteHelper {
         self.verbosity.info("Exporting to wiki...");
 
         // Process the push and get the ref that was pushed
-        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), self.verbosity, lines)?;
+        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, lines)?;
 
         // Tell git the push succeeded
         writeln!(out, "ok {}", pushed_ref)?;
@@ -245,10 +246,32 @@ impl RemoteHelper {
     }
 }
 
-/// Parse a dokuwiki URL like `dokuwiki::user@host/namespace`
-fn parse_url(url: &str) -> Result<(String, String, Option<String>)> {
+/// Default file extension for wiki pages
+const DEFAULT_EXTENSION: &str = "md";
+
+/// Parse a dokuwiki URL like `dokuwiki::user@host/namespace?ext=txt`
+/// Returns (wiki_url, user, namespace, extension)
+fn parse_url(url: &str) -> Result<(String, String, Option<String>, String)> {
     // Remove dokuwiki:: prefix if present
     let url = url.strip_prefix("dokuwiki::").unwrap_or(url);
+
+    // Extract query parameters (e.g., ?ext=txt)
+    let (url, extension) = if let Some(query_pos) = url.find('?') {
+        let query = &url[query_pos + 1..];
+        let url = &url[..query_pos];
+
+        // Parse ext parameter
+        let ext = query
+            .split('&')
+            .find_map(|param| {
+                param.strip_prefix("ext=")
+            })
+            .unwrap_or(DEFAULT_EXTENSION);
+
+        (url, ext.to_string())
+    } else {
+        (url, DEFAULT_EXTENSION.to_string())
+    };
 
     // Parse user@host/path
     let (user, rest) = if let Some(at_pos) = url.find('@') {
@@ -261,8 +284,7 @@ fn parse_url(url: &str) -> Result<(String, String, Option<String>)> {
     };
 
     // Split host and namespace path
-    // Support both / and # as namespace separator
-    let (host, namespace) = if let Some(sep_pos) = rest.find(|c| c == '/' || c == '#') {
+    let (host, namespace) = if let Some(sep_pos) = rest.find('/') {
         let host = &rest[..sep_pos];
         let ns = &rest[sep_pos + 1..];
         // Convert path to namespace (slashes to colons)
@@ -275,5 +297,5 @@ fn parse_url(url: &str) -> Result<(String, String, Option<String>)> {
     // Build wiki URL
     let wiki_url = format!("https://{}", host);
 
-    Ok((wiki_url, user, namespace))
+    Ok((wiki_url, user, namespace, extension))
 }

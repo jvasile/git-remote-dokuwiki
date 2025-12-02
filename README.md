@@ -70,13 +70,29 @@ DOKUWIKI_VERBOSE=2 git fetch  # same as -vv
 
 ## How it works
 
-- Pages are stored as `.txt` files with directory structure matching DokuWiki namespaces
+- Pages are stored as `.md` files with directory structure matching DokuWiki namespaces
+- Media files are stored alongside pages (e.g., `namespace/image.png`)
 - Each wiki revision becomes a git commit with the original timestamp and author
 - Pushing creates new wiki revisions with the git commit message as the edit summary
 
+## File extension
+
+Pages use the `.md` extension by default. This works well for both DokuWiki syntax and Markdown wikis, as most editors will provide reasonable syntax highlighting for either.
+
+To use a different extension, add `?ext=` to the URL:
+
+```bash
+git clone "dokuwiki::user@wiki.example.com?ext=txt"
+git clone "dokuwiki::user@wiki.example.com/namespace?ext=dw"
+```
+
+The extension is stored in `.git/config` as part of the remote URL, so it persists across operations.
+
+**Note:** Media files are identified as any file that doesn't have the configured page extension. This means `.md` files cannot be used as media attachments when using the default extension.
+
 ## Requirements
 
-- DokuWiki with XML-RPC enabled (`lib/exe/xmlrpc.php`)
+- DokuWiki with JSON-RPC enabled (API version 14+)
 - A user account with appropriate permissions
 
 ## License

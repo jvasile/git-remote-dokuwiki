@@ -19,7 +19,7 @@ struct Revision {
 }
 
 /// Convert a page ID to a file path
-fn page_id_to_path(page_id: &str, namespace: Option<&str>) -> String {
+fn page_id_to_path(page_id: &str, namespace: Option<&str>, extension: &str) -> String {
     let mut id = page_id.to_string();
 
     // Strip namespace prefix if present
@@ -29,14 +29,15 @@ fn page_id_to_path(page_id: &str, namespace: Option<&str>) -> String {
         }
     }
 
-    // Convert colons to path separators and add .txt extension
+    // Convert colons to path separators and add extension
     let parts: Vec<&str> = id.split(':').collect();
     let mut path = parts.join("/");
-    path.push_str(".txt");
+    path.push('.');
+    path.push_str(extension);
     path
 }
 
-/// Convert a media ID to a file path in media/ directory
+/// Convert a media ID to a file path (alongside pages, no media/ prefix)
 fn media_id_to_path(media_id: &str, namespace: Option<&str>) -> String {
     let mut id = media_id.to_string();
 
@@ -47,9 +48,9 @@ fn media_id_to_path(media_id: &str, namespace: Option<&str>) -> String {
         }
     }
 
-    // Convert colons to path separators, prepend media/
+    // Convert colons to path separators
     let parts: Vec<&str> = id.split(':').collect();
-    format!("media/{}", parts.join("/"))
+    parts.join("/")
 }
 
 /// Generate fast-import stream for wiki history
@@ -62,6 +63,7 @@ pub fn generate<W: Write>(
     since_timestamp: Option<i64>,
     parent_sha: Option<&str>,
     wiki_host: &str,
+    extension: &str,
     verbosity: Verbosity,
     out: &mut W,
 ) -> Result<Option<i64>> {
@@ -350,7 +352,7 @@ pub fn generate<W: Write>(
             let path = if rev.is_media {
                 media_id_to_path(&rev.id, namespace)
             } else {
-                page_id_to_path(&rev.id, namespace)
+                page_id_to_path(&rev.id, namespace, extension)
             };
 
             // Check if this is a delete revision

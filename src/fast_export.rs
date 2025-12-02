@@ -57,9 +57,10 @@ fn set_last_revision_timestamp(timestamp: i64) {
 }
 
 /// Convert a file path back to a DokuWiki page ID
-fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
-    // Only handle .txt files
-    let path = path.strip_suffix(".txt")?;
+fn path_to_page_id(path: &str, namespace: Option<&str>, extension: &str) -> Option<String> {
+    // Only handle files with the configured extension
+    let suffix = format!(".{}", extension);
+    let path = path.strip_suffix(&suffix)?;
 
     // Convert path separators to colons
     let page_id = path.replace('/', ":");
@@ -72,11 +73,14 @@ fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
     }
 }
 
+/// Check if a path is a media file (not a page with the configured extension)
+fn is_media_file(path: &str, extension: &str) -> bool {
+    let page_suffix = format!(".{}", extension);
+    !path.ends_with(&page_suffix)
+}
+
 /// Convert a media file path back to a DokuWiki media ID
 fn path_to_media_id(path: &str, namespace: Option<&str>) -> Option<String> {
-    // Only handle files in media/ directory
-    let path = path.strip_prefix("media/")?;
-
     // Convert path separators to colons
     let media_id = path.replace('/', ":");
 
@@ -93,6 +97,7 @@ fn path_to_media_id(path: &str, namespace: Option<&str>) -> Option<String> {
 pub fn process<I: Iterator<Item = io::Result<String>>>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
+    extension: &str,
     verbosity: Verbosity,
     lines: &mut I,
 ) -> Result<String> {
@@ -212,17 +217,23 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
             let status = parts[0];
             let path = parts[1];
 
-            let item_desc = if let Some(page_id) = path_to_page_id(path, namespace) {
+            let item_desc = if let Some(page_id) = path_to_page_id(path, namespace, extension) {
+                // It's a page file (has the configured extension)
                 match status {
                     "D" => Some(format!("delete page {}", page_id)),
                     "A" | "M" => Some(format!("update page {}", page_id)),
                     _ => None,
                 }
-            } else if let Some(media_id) = path_to_media_id(path, namespace) {
-                match status {
-                    "D" => Some(format!("delete media {}", media_id)),
-                    "A" | "M" => Some(format!("update media {}", media_id)),
-                    _ => None,
+            } else if is_media_file(path, extension) {
+                // It's a media file (doesn't have the page extension)
+                if let Some(media_id) = path_to_media_id(path, namespace) {
+                    match status {
+                        "D" => Some(format!("delete media {}", media_id)),
+                        "A" | "M" => Some(format!("update media {}", media_id)),
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
             } else {
                 None
@@ -264,8 +275,8 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
             let status = parts[0];
             let path = parts[1];
 
-            // Check if it's a page (.txt file)
-            if let Some(page_id) = path_to_page_id(path, namespace) {
+            // Check if it's a page (has the configured extension)
+            if let Some(page_id) = path_to_page_id(path, namespace, extension) {
                 let item_desc = match status {
                     "D" => format!("delete page {}", page_id),
                     "A" | "M" => format!("update page {}", page_id),
@@ -303,8 +314,11 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
                     pushed_items.push(item_desc);
                 }
             }
-            // Check if it's a media file (in media/ directory)
-            else if let Some(media_id) = path_to_media_id(path, namespace) {
+            // Check if it's a media file (doesn't have the page extension)
+            else if is_media_file(path, extension) {
+                let Some(media_id) = path_to_media_id(path, namespace) else {
+                    continue;
+                };
                 let item_desc = match status {
                     "D" => format!("delete media {}", media_id),
                     "A" | "M" => format!("update media {}", media_id),
