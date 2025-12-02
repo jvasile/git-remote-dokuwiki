@@ -106,6 +106,16 @@ The extension is stored in `.git/config` as part of the remote URL, so it persis
 - DokuWiki with JSON-RPC enabled (API version 14+)
 - A user account with appropriate permissions
 
+### Remote API Access
+
+If you get "forbidden" errors, your user may not have API access. In `conf/local.php`, the `remoteuser` setting controls who can use the API:
+
+```php
+$conf['remoteuser'] = '@user';        // Allow all logged-in users
+```
+
+Options include `@user` (any authenticated user), `@admin` (admins only), or specific usernames.
+
 ## License
 
 AGPL-3.0

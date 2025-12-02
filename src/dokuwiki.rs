@@ -219,6 +219,16 @@ impl DokuWikiClient {
             .map_err(|e| anyhow!("JSON parse error: {} - body was: {}", e, &body_text[..body_text.len().min(200)]))?;
 
         if let Some(error) = body.error {
+            // Provide helpful message for common permission errors
+            if error.message.contains("forbidden") {
+                return Err(anyhow!(
+                    "API error {}: {}\n\n\
+                    Hint: Your user may not have remote API access. Ask the wiki admin to add\n\
+                    your user or group to the 'remoteuser' setting in conf/local.php, e.g.:\n\
+                    $conf['remoteuser'] = '@user';",
+                    error.code, error.message
+                ));
+            }
             return Err(anyhow!("API error {}: {}", error.code, error.message));
         }
 

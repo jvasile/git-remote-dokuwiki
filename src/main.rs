@@ -306,8 +306,13 @@ fn parse_url(url: &str) -> Result<(String, String, Option<String>, String)> {
         (rest.to_string(), None)
     };
 
-    // Build wiki URL
-    let wiki_url = format!("https://{}", host);
+    // Build wiki URL - use HTTP for localhost, HTTPS otherwise
+    let protocol = if host.starts_with("localhost") || host.starts_with("127.0.0.1") {
+        "http"
+    } else {
+        "https"
+    };
+    let wiki_url = format!("{}://{}", protocol, host);
 
     Ok((wiki_url, user, namespace, extension))
 }
