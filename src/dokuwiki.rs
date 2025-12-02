@@ -274,6 +274,10 @@ impl DokuWikiClient {
     pub fn ensure_authenticated(&mut self) -> Result<()> {
         if self.has_cached_session() {
             self.verbosity.info(&format!("Using cached session for {}", self.user));
+            // If cookies were loaded from env var but we're saving to .git/, copy them
+            if !self.cookie_path.exists() {
+                let _ = self.save_cookies();
+            }
         } else {
             let (user, password) = self.get_credentials()?;
             self.login(&user, &password)?;
@@ -494,7 +498,8 @@ impl DokuWikiClient {
     /// Get list of all media files in a namespace
     pub fn get_attachments(&mut self, namespace: &str) -> Result<Vec<MediaInfo>> {
         let result = self.call("core.listMedia", json!({
-            "namespace": namespace
+            "namespace": namespace,
+            "depth": 0  // 0 = unlimited depth, list all media recursively
         }))?;
 
         let arr = result.as_array().ok_or_else(|| anyhow!("Expected array"))?;
