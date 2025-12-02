@@ -77,6 +77,13 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
 
     verbosity.debug(&format!("Pushing to {}", target_ref));
 
+    // Only allow pushing to main branch - DokuWiki has no concept of branches
+    if target_ref != "refs/heads/main" {
+        return Err(anyhow!(
+            "Can only push to main branch. DokuWiki does not support branches."
+        ));
+    }
+
     // Check that origin/main is an ancestor of HEAD (i.e., we've merged/rebased remote changes)
     let ancestor_check = Command::new("git")
         .args(["merge-base", "--is-ancestor", "origin/main", "HEAD"])
