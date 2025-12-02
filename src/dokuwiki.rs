@@ -8,7 +8,6 @@ use reqwest::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -96,25 +95,25 @@ impl DokuWikiClient {
     pub fn new(wiki_url: &str, user: &str, verbosity: Verbosity) -> Result<Self> {
         let wiki_url = wiki_url.trim_end_matches('/').to_string();
         let rpc_url = format!("{}/lib/exe/jsonrpc.php", wiki_url);
+        let url: url::Url = rpc_url.parse().context("Invalid wiki URL")?;
 
         let load_path = get_cookie_load_path();
 
         let mut has_loaded_cookies = false;
         let cookie_store = if let Ok(ref path) = load_path {
             if path.exists() {
-                if let Ok(file) = fs::File::open(path) {
-                    let reader = BufReader::new(file);
-                    match cookie_store::serde::json::load_all(reader) {
-                        Ok(store) => {
-                            has_loaded_cookies = true;
-                            store
-                        }
-                        Err(_) => CookieStore::new(None),
+                match load_netscape_cookies(path, &url) {
+                    Ok(store) => {
+                        has_loaded_cookies = true;
+                        store
                     }
-                } else {
-                    CookieStore::new(None)
+                    Err(e) => {
+                        eprintln!("Failed to load cookies from {:?}: {}", path, e);
+                        CookieStore::new(None)
+                    }
                 }
             } else {
+                eprintln!("Cookie file not found: {:?}", path);
                 CookieStore::new(None)
             }
         } else {
@@ -122,7 +121,7 @@ impl DokuWikiClient {
         };
 
         let cookie_path = get_repo_cookie_path().unwrap_or_else(|_| {
-            load_path.unwrap_or_else(|_| PathBuf::from(".git/dokuwiki-cookies.json"))
+            load_path.unwrap_or_else(|_| PathBuf::from(".git/dokuwiki-cookies.txt"))
         });
 
         let cookie_store = Arc::new(RwLock::new(cookie_store));
@@ -146,18 +145,10 @@ impl DokuWikiClient {
 
     /// Save cookies to disk
     fn save_cookies(&self) -> Result<()> {
-        if let Some(parent) = self.cookie_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
         let store = self.cookie_store.read().unwrap();
-        let file = fs::File::create(&self.cookie_path)?;
-        let mut writer = BufWriter::new(file);
-
-        cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut writer)
-            .map_err(|e| anyhow!("Failed to save cookies: {}", e))?;
-
-        Ok(())
+        let url: url::Url = self.rpc_url.parse().unwrap();
+        let domain = url.host_str().unwrap_or("localhost");
+        save_netscape_cookies(&store, &self.cookie_path, domain)
     }
 
     /// Get cookie header for requests
@@ -624,7 +615,7 @@ fn get_repo_cookie_path() -> Result<PathBuf> {
     }
 
     let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(PathBuf::from(git_dir).join("dokuwiki-cookies.json"))
+    Ok(PathBuf::from(git_dir).join("dokuwiki-cookies.txt"))
 }
 
 /// Get the path to load cookies from (env var override or .git directory)
@@ -633,6 +624,83 @@ fn get_cookie_load_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(cookie_path));
     }
     get_repo_cookie_path()
+}
+
+/// Load cookies from Netscape format file
+fn load_netscape_cookies(path: &std::path::Path, url: &url::Url) -> Result<CookieStore> {
+    use std::io::BufRead;
+
+    let file = fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+    let mut store = CookieStore::new(None);
+
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim();
+
+        // Skip comments and empty lines (but not #HttpOnly_ lines)
+        if line.is_empty() || (line.starts_with('#') && !line.starts_with("#HttpOnly_")) {
+            continue;
+        }
+
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+
+        let domain = fields[0].trim_start_matches("#HttpOnly_");
+        let _host_only = fields[1];
+        let path = fields[2];
+        let secure = fields[3].eq_ignore_ascii_case("true");
+        let _expiry = fields[4];
+        let name = fields[5];
+        let value = fields[6];
+
+        // Build a Set-Cookie header string
+        let mut cookie_str = format!("{}={}; Domain={}; Path={}", name, value, domain, path);
+        if secure {
+            cookie_str.push_str("; Secure");
+        }
+
+        let _ = store.parse(&cookie_str, url);
+    }
+
+    Ok(store)
+}
+
+/// Save cookies to Netscape format file
+fn save_netscape_cookies(store: &CookieStore, path: &std::path::Path, domain: &str) -> Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = fs::File::create(path)?;
+    writeln!(file, "# Netscape HTTP Cookie File")?;
+    writeln!(file, "# https://curl.se/docs/http-cookies.html")?;
+    writeln!(file, "# This file was generated by git-remote-dokuwiki")?;
+    writeln!(file)?;
+
+    // Build a URL for this domain to query cookies
+    let url: url::Url = format!("https://{}/", domain).parse().unwrap();
+
+    for cookie in store.matches(&url) {
+        let http_only_prefix = if cookie.http_only().unwrap_or(false) { "#HttpOnly_" } else { "" };
+        let domain_str = cookie.domain().unwrap_or(domain);
+        let host_only = if domain_str.starts_with('.') { "FALSE" } else { "TRUE" };
+        let path = cookie.path().unwrap_or("/");
+        let secure = if cookie.secure().unwrap_or(false) { "TRUE" } else { "FALSE" };
+        // Use 0 for session cookies
+        let expiry = "0";
+        let name = cookie.name();
+        let value = cookie.value();
+
+        writeln!(file, "{}{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            http_only_prefix, domain_str, host_only, path, secure, expiry, name, value)?;
+    }
+
+    Ok(())
 }
 
 fn parse_page_list(result: &Value) -> Result<Vec<PageInfo>> {
