@@ -1,6 +1,7 @@
 //! Verbosity control for output messages
 
 use std::env;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Global verbosity level (can be updated by git's option command)
@@ -57,6 +58,19 @@ impl Verbosity {
     pub fn debug(&self, msg: &str) {
         if self.level() >= 3 {
             eprintln!("DEBUG: {}", msg);
+        }
+    }
+
+    /// Show progress if min_level <= verbosity <= max_level
+    pub fn progress(&self, msg: &str, current: usize, total: usize, min_level: u8, max_level: u8) {
+        let level = self.level();
+        if level >= min_level && level <= max_level {
+            eprint!("\r{} {}/{}   ", msg, current, total);
+            if current == total {
+                eprintln!();
+            } else {
+                let _ = io::stderr().flush();
+            }
         }
     }
 }

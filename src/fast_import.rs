@@ -186,9 +186,10 @@ pub fn generate<W: Write>(
             client.get_all_pages()?
         };
 
-        verbosity.info(&format!("Found {} pages", pages.len()));
+        let total_pages = pages.len();
 
-        for page in &pages {
+        for (i, page) in pages.iter().enumerate() {
+            verbosity.progress("Fetching pages...", i + 1, total_pages, 2, 2);
             if let Some(ns) = namespace {
                 if !page.id.starts_with(&format!("{}:", ns)) && page.id != ns {
                     continue;
@@ -238,9 +239,10 @@ pub fn generate<W: Write>(
             media_files
         };
 
-        verbosity.info(&format!("Found {} media files", media_files.len()));
+        let total_media = media_files.len();
 
-        for media in &media_files {
+        for (i, media) in media_files.iter().enumerate() {
+            verbosity.progress("Fetching media...", i + 1, total_media, 2, 2);
             verbosity.debug(&format!("  Fetching media history for {}...", media.id));
 
             match client.get_media_versions(&media.id) {
@@ -328,13 +330,15 @@ pub fn generate<W: Write>(
 
     let mut mark: u64 = 1;
     let mut last_commit_mark: Option<u64> = None;
-    let mut commit_count = 0;
     let mut latest_timestamp: i64 = 0;
 
     let mut timestamps: Vec<i64> = revisions_by_time.keys().copied().collect();
     timestamps.sort();
+    let total_timestamps = timestamps.len();
 
-    for timestamp in timestamps {
+    for (i, timestamp) in timestamps.iter().enumerate() {
+        verbosity.progress("Generating commits...", i + 1, total_timestamps, 2, 255);
+        let timestamp = *timestamp;
         let revs = &revisions_by_time[&timestamp];
 
         // Collect authors and summaries
@@ -447,15 +451,9 @@ pub fn generate<W: Write>(
         writeln!(out)?;
 
         last_commit_mark = Some(commit_mark);
-        commit_count += 1;
         latest_timestamp = latest_timestamp.max(timestamp);
 
-        if commit_count % 100 == 0 {
-            verbosity.info(&format!("  {} commits...", commit_count));
-        }
     }
-
-    verbosity.info(&format!("Generated {} commits", commit_count));
 
     Ok(if latest_timestamp > 0 { Some(latest_timestamp) } else { None })
 }
