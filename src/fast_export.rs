@@ -3,12 +3,36 @@
 //! Instead of parsing git's fast-export stream (which includes full tree state),
 //! we use git commands to find what actually changed and push only those files.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use std::io;
 use std::process::Command;
 
 use crate::dokuwiki::DokuWikiClient;
 use crate::verbosity::Verbosity;
+
+/// Create a detailed error message for push failures
+fn push_error(failed_item: &str, error: Error, pushed: &[String], pending: &[String]) -> Error {
+    let mut msg = format!("Push failed while trying to {}\nError: {}\n", failed_item, error);
+
+    if !pushed.is_empty() {
+        msg.push_str("\nSuccessfully pushed:\n");
+        for item in pushed {
+            msg.push_str(&format!("  - {}\n", item));
+        }
+    }
+
+    if !pending.is_empty() {
+        msg.push_str("\nNot yet pushed:\n");
+        for item in pending {
+            msg.push_str(&format!("  - {}\n", item));
+        }
+    }
+
+    msg.push_str("\nThe wiki may be in an inconsistent state. ");
+    msg.push_str("Fix the issue and push again to complete the update.");
+
+    anyhow!(msg)
+}
 
 /// Get the timestamp of the latest imported revision from git config
 fn get_last_revision_timestamp() -> Option<i64> {
@@ -163,6 +187,56 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
 
     verbosity.info(&format!("Pushing {} commit(s)", commits.len()));
 
+    // Track what we're pushing for error recovery
+    let mut pending_items: Vec<String> = Vec::new();
+    let mut pushed_items: Vec<String> = Vec::new();
+
+    // First, collect all items to be pushed
+    for commit in &commits {
+        let diff_output = Command::new("git")
+            .args(["diff-tree", "--no-commit-id", "--name-status", "-r", commit])
+            .output()?;
+
+        if !diff_output.status.success() {
+            return Err(anyhow!("Failed to get diff for commit {}", commit));
+        }
+
+        let changes = std::str::from_utf8(&diff_output.stdout)?;
+
+        for line in changes.lines() {
+            let parts: Vec<&str> = line.splitn(2, '\t').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+
+            let status = parts[0];
+            let path = parts[1];
+
+            let item_desc = if let Some(page_id) = path_to_page_id(path, namespace) {
+                match status {
+                    "D" => Some(format!("delete page {}", page_id)),
+                    "A" | "M" => Some(format!("update page {}", page_id)),
+                    _ => None,
+                }
+            } else if let Some(media_id) = path_to_media_id(path, namespace) {
+                match status {
+                    "D" => Some(format!("delete media {}", media_id)),
+                    "A" | "M" => Some(format!("update media {}", media_id)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            if let Some(desc) = item_desc {
+                if !pending_items.contains(&desc) {
+                    pending_items.push(desc);
+                }
+            }
+        }
+    }
+
+    // Now push each item, tracking progress
     for commit in &commits {
         // Get commit message
         let msg_output = Command::new("git")
@@ -192,14 +266,18 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
 
             // Check if it's a page (.txt file)
             if let Some(page_id) = path_to_page_id(path, namespace) {
-                match status {
+                let item_desc = match status {
+                    "D" => format!("delete page {}", page_id),
+                    "A" | "M" => format!("update page {}", page_id),
+                    _ => continue,
+                };
+
+                let result = match status {
                     "D" => {
-                        // Delete
                         verbosity.info(&format!("  Deleting page {}...", page_id));
-                        client.put_page(&page_id, "", &format!("Deleted: {}", message))?;
+                        client.put_page(&page_id, "", &format!("Deleted: {}", message))
                     }
                     "A" | "M" => {
-                        // Add or modify - get the content from git
                         let content_output = Command::new("git")
                             .args(["show", &format!("{}:{}", commit, path)])
                             .output()?;
@@ -207,36 +285,60 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
                         if content_output.status.success() {
                             let content = String::from_utf8_lossy(&content_output.stdout);
                             verbosity.info(&format!("  Updating page {}...", page_id));
-                            client.put_page(&page_id, &content, &message)?;
+                            client.put_page(&page_id, &content, &message)
+                        } else {
+                            continue;
                         }
                     }
-                    _ => {
-                        verbosity.debug(&format!("  Skipping {} (status: {})", path, status));
-                    }
+                    _ => continue,
+                };
+
+                if let Err(e) = result {
+                    return Err(push_error(&item_desc, e, &pushed_items, &pending_items));
+                }
+
+                // Move from pending to pushed
+                pending_items.retain(|x| x != &item_desc);
+                if !pushed_items.contains(&item_desc) {
+                    pushed_items.push(item_desc);
                 }
             }
             // Check if it's a media file (in media/ directory)
             else if let Some(media_id) = path_to_media_id(path, namespace) {
-                match status {
+                let item_desc = match status {
+                    "D" => format!("delete media {}", media_id),
+                    "A" | "M" => format!("update media {}", media_id),
+                    _ => continue,
+                };
+
+                let result = match status {
                     "D" => {
-                        // Delete media file
                         verbosity.info(&format!("  Deleting media {}...", media_id));
-                        client.delete_attachment(&media_id)?;
+                        client.delete_attachment(&media_id)
                     }
                     "A" | "M" => {
-                        // Add or modify - get the content from git
                         let content_output = Command::new("git")
                             .args(["show", &format!("{}:{}", commit, path)])
                             .output()?;
 
                         if content_output.status.success() {
                             verbosity.info(&format!("  Updating media {}...", media_id));
-                            client.put_attachment(&media_id, &content_output.stdout, true)?;
+                            client.put_attachment(&media_id, &content_output.stdout, true)
+                        } else {
+                            continue;
                         }
                     }
-                    _ => {
-                        verbosity.debug(&format!("  Skipping media {} (status: {})", path, status));
-                    }
+                    _ => continue,
+                };
+
+                if let Err(e) = result {
+                    return Err(push_error(&item_desc, e, &pushed_items, &pending_items));
+                }
+
+                // Move from pending to pushed
+                pending_items.retain(|x| x != &item_desc);
+                if !pushed_items.contains(&item_desc) {
+                    pushed_items.push(item_desc);
                 }
             }
         }
