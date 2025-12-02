@@ -1,0 +1,97 @@
+.TH GIT-REMOTE-DOKUWIKI 1 "December 2025" "git-remote-dokuwiki 0.4.1" "User Commands"
+.SH NAME
+git-remote-dokuwiki \- git remote helper for DokuWiki
+.SH SYNOPSIS
+.B git clone
+dokuwiki::\fIuser\fR@\fIwiki.example.com\fR[\fI/namespace\fR]
+.br
+.B git push
+.br
+.B git pull
+.SH DESCRIPTION
+.B git-remote-dokuwiki
+is a git remote helper that allows you to use git to interact with a DokuWiki.
+You can clone, fetch, edit, and push wiki pages just like a regular git repository.
+.PP
+Pages are stored as
+.B .md
+files with directory structure matching DokuWiki namespaces.
+Media files are stored alongside pages.
+Each wiki revision becomes a git commit with the original timestamp and author.
+.SH EXAMPLES
+.TP
+Clone an entire wiki:
+.B git clone dokuwiki::user@wiki.example.com
+.TP
+Clone a specific namespace:
+.B git clone dokuwiki::user@wiki.example.com/namespace
+.TP
+Shallow clone (latest revision only):
+.B git clone --depth 1 dokuwiki::user@wiki.example.com
+.TP
+Push changes:
+.nf
+git add page.md
+git commit -m "Update page"
+git push
+.fi
+.TP
+Use a different file extension:
+.B git clone "dokuwiki::user@wiki.example.com?ext=txt"
+.SH AUTHENTICATION
+The tool uses git's credential helper system.
+On first use, it will prompt for your password and store the session cookie in
+.IR .git/dokuwiki-cookies.txt .
+.PP
+Alternatively, set the
+.B DOKUWIKI_PASSWORD
+environment variable.
+.SH ENVIRONMENT
+.TP
+.B DOKUWIKI_PASSWORD
+Password for authentication. If set, skips the credential helper.
+.TP
+.B DOKUWIKI_COOKIE_FILE
+Path to cookie file. Defaults to
+.IR .git/dokuwiki-cookies.txt .
+.TP
+.B DOKUWIKI_VERBOSE
+Set to 1 for info output, 2 for debug output.
+.SH VERBOSE OUTPUT
+Use git's
+.B \-v
+flag for progress info, or
+.B \-vv
+for debug output:
+.PP
+.nf
+git fetch -v
+git push -vv
+.fi
+.SH REQUIREMENTS
+.IP \(bu 2
+DokuWiki with JSON-RPC API enabled (API version 14+)
+.IP \(bu 2
+A user account with remote API access
+.PP
+To enable the remote API, add to
+.IR conf/local.php :
+.PP
+.nf
+$conf['remote'] = 1;
+$conf['remoteuser'] = '@user';
+.fi
+.SH FILES
+.TP
+.I .git/dokuwiki-cookies.txt
+Session cookies for authentication (Netscape format).
+.SH SEE ALSO
+.BR git (1),
+.BR git-remote-helpers (7)
+.PP
+Project homepage:
+.I https://github.com/jvasile/git-remote-dokuwiki
+.SH AUTHOR
+James Vasile <james@jamesvasile.com>
+.SH LICENSE
+AGPL-3.0

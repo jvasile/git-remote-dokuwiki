@@ -39,8 +39,10 @@ jobs:
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../git-remote-dokuwiki-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} dist/
+          cp git-remote-dokuwiki.1 dist/
+          tar czf git-remote-dokuwiki-${{ matrix.target }}.tar.gz -C dist .
 
       - name: Build .deb package
         if: matrix.target == 'x86_64-unknown-linux-gnu'

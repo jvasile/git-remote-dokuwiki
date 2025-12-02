@@ -45,9 +45,11 @@ maintainer = "James Vasile <james@jamesvasile.com>"
 section = "vcs"
 assets = [
     ["target/release/git-remote-dokuwiki", "usr/bin/", "755"],
+    ["git-remote-dokuwiki.1", "usr/share/man/man1/", "644"],
 ]
 
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/git-remote-dokuwiki", dest = "/usr/bin/git-remote-dokuwiki", mode = "755" },
+    { source = "git-remote-dokuwiki.1", dest = "/usr/share/man/man1/git-remote-dokuwiki.1", mode = "644" },
 ]
