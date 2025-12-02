@@ -53,14 +53,14 @@ This limits the number of revisions fetched per page/media file, significantly r
 
 ## Authentication
 
-The tool uses git's credential helper system. On first use, it will prompt for your password and store the session cookie in `.git/dokuwiki-cookies.json`.
+The tool uses git's credential helper system. On first use, it will prompt for your password and store the session cookie in `.git/dokuwiki-cookies.txt` (Netscape cookie format). This cookie file can be used by other tools that support Netscape cookies, such as `curl -b`.
 
 You can also set the `DOKUWIKI_PASSWORD` environment variable.
 
 To use a cookie file from a different location (e.g., to share authentication between repos):
 
 ```bash
-DOKUWIKI_COOKIE_FILE=/path/to/cookies.json git clone dokuwiki::user@wiki.example.com
+DOKUWIKI_COOKIE_FILE=/path/to/cookies.txt git clone dokuwiki::user@wiki.example.com
 ```
 
 ## Verbose output
