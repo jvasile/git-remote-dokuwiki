@@ -4,7 +4,7 @@
 //! we use git commands to find what actually changed and push only those files.
 
 use anyhow::{anyhow, Error, Result};
-use std::io;
+use std::io::BufRead;
 use std::process::Command;
 
 use crate::dokuwiki::DokuWikiClient;
@@ -94,23 +94,40 @@ fn path_to_media_id(path: &str, namespace: Option<&str>) -> Option<String> {
 
 /// Process push by finding changed files and updating the wiki
 /// Consumes the fast-export stream but uses git diff to find actual changes
-pub fn process<I: Iterator<Item = io::Result<String>>>(
+pub fn process<R: BufRead>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
     extension: &str,
     verbosity: Verbosity,
-    lines: &mut I,
+    reader: &mut R,
 ) -> Result<String> {
     // We need to consume the fast-export stream even though we won't use it directly
     // Parse it to find the ref being pushed
+    // The stream contains binary blob data, so we need to handle it carefully
     let mut target_ref = String::new();
+    let mut line_buf = Vec::new();
 
-    for line in lines {
-        let line = line?;
+    loop {
+        line_buf.clear();
+        let bytes_read = reader.read_until(b'\n', &mut line_buf)?;
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        // Convert to string lossily - we only care about text commands
+        let line = String::from_utf8_lossy(&line_buf);
+        let line = line.trim_end();
+
         if line.starts_with("commit ") {
             target_ref = line[7..].to_string();
         } else if line == "done" {
             break;
+        } else if line.starts_with("data ") {
+            // Skip binary data - parse the length and skip that many bytes
+            if let Ok(len) = line[5..].parse::<usize>() {
+                let mut skip_buf = vec![0u8; len];
+                reader.read_exact(&mut skip_buf)?;
+            }
         }
         // Consume but ignore other lines
     }

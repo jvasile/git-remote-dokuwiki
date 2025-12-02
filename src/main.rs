@@ -53,15 +53,20 @@ fn main() -> Result<()> {
     let mut helper = RemoteHelper::new(url, verbosity)?;
 
     let stdin = io::stdin();
+    let mut stdin = stdin.lock();
     let mut stdout = io::stdout();
     let mut in_import_batch = false;
+    let mut line = String::new();
 
-    let mut lines = stdin.lock().lines();
+    loop {
+        line.clear();
+        let bytes_read = stdin.read_line(&mut line).context("Failed to read from stdin")?;
+        if bytes_read == 0 {
+            break; // EOF
+        }
+        let line = line.trim_end();
 
-    while let Some(line) = lines.next() {
-        let line = line.context("Failed to read from stdin")?;
-
-        match parse_command(&line) {
+        match parse_command(line) {
             Command::Capabilities => {
                 helper.capabilities(&mut stdout)?;
             }
@@ -77,7 +82,7 @@ fn main() -> Result<()> {
             }
             Command::Export => {
                 // Export reads the fast-export stream directly from the remaining stdin
-                helper.export(&mut stdout, &mut lines)?;
+                helper.export(&mut stdout, &mut stdin)?;
                 return Ok(());
             }
             Command::Empty => {
@@ -236,15 +241,15 @@ impl RemoteHelper {
         Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    fn export<W: Write, I: Iterator<Item = io::Result<String>>>(
+    fn export<W: Write, R: io::BufRead>(
         &mut self,
         out: &mut W,
-        lines: &mut I,
+        reader: &mut R,
     ) -> Result<()> {
         self.verbosity.info("Exporting to wiki...");
 
         // Process the push and get the ref that was pushed
-        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, lines)?;
+        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, reader)?;
 
         // Tell git the push succeeded
         writeln!(out, "ok {}", pushed_ref)?;
