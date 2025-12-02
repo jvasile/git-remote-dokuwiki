@@ -168,7 +168,7 @@ def limited_credentials():
     return {"user": "limited", "password": "limited123"}
 
 
-def clone_wiki(repo_dir, user, password, namespace=None, host="localhost:8080"):
+def clone_wiki(repo_dir, user, password, namespace=None, host="localhost:8080", depth=None):
     """Clone a wiki namespace to a directory."""
     url = f"dokuwiki::{user}@{host}"
     if namespace:
@@ -177,8 +177,13 @@ def clone_wiki(repo_dir, user, password, namespace=None, host="localhost:8080"):
     env = os.environ.copy()
     env["DOKUWIKI_PASSWORD"] = password
 
+    cmd = ["git", "clone"]
+    if depth is not None:
+        cmd.extend(["--depth", str(depth)])
+    cmd.extend([url, str(repo_dir)])
+
     result = subprocess.run(
-        ["git", "clone", url, str(repo_dir)],
+        cmd,
         env=env,
         capture_output=True,
         text=True

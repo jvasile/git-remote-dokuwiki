@@ -3,7 +3,11 @@ Test clone/add/delete/modify/push at the root level.
 """
 
 import subprocess
+import time
+import uuid
 from pathlib import Path
+
+import requests
 
 from conftest import clone_wiki, git_push, git_pull
 
@@ -113,10 +117,6 @@ class TestRootOperations:
 
     def test_pull_changes(self, docker_wiki, tmp_path, admin_credentials):
         """Pull changes made on the wiki."""
-        import requests
-        import uuid
-        import time
-
         # First clone
         repo1 = tmp_path / "repo1"
         repo1.mkdir()
@@ -164,3 +164,59 @@ class TestRootOperations:
         remote_page = repo1 / f"{page_name}.md"
         assert remote_page.exists(), f"Remote page not pulled. Contents: {list(repo1.iterdir())}"
         assert "Remote Page" in remote_page.read_text()
+
+    def test_shallow_clone(self, docker_wiki, temp_repo, admin_credentials):
+        """Test that --depth=1 limits the number of commits."""
+        # Create a page with multiple revisions via API
+        page_name = f"shallowtest_{uuid.uuid4().hex[:8]}"
+        session = requests.Session()
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "dokuwiki.login",
+                "params": {"user": "admin", "pass": "admin123"},
+                "id": 1
+            }
+        )
+
+        # Create multiple revisions
+        for i in range(3):
+            time.sleep(1)  # Ensure different timestamps
+            session.post(
+                f"{docker_wiki}/lib/exe/jsonrpc.php",
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "core.savePage",
+                    "params": {
+                        "page": page_name,
+                        "text": f"====== Shallow Test ======\n\nRevision {i + 1}.\n",
+                        "summary": f"Revision {i + 1}"
+                    },
+                    "id": i + 2
+                }
+            )
+
+        # Clone with depth=1
+        result = clone_wiki(
+            temp_repo,
+            admin_credentials["user"],
+            admin_credentials["password"],
+            depth=1
+        )
+        assert result.returncode == 0, f"Clone failed: {result.stderr}"
+
+        # Check that the page exists with latest content
+        page_path = temp_repo / f"{page_name}.md"
+        assert page_path.exists(), f"Page not found: {list(temp_repo.iterdir())}"
+        assert "Revision 3" in page_path.read_text()
+
+        # Check that we only have 1 commit for this page's history
+        log_result = subprocess.run(
+            ["git", "log", "--oneline", "--", f"{page_name}.md"],
+            cwd=temp_repo,
+            capture_output=True,
+            text=True
+        )
+        commits = [line for line in log_result.stdout.strip().split('\n') if line]
+        assert len(commits) == 1, f"Expected 1 commit, got {len(commits)}: {commits}"
