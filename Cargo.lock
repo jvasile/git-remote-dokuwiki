@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "git-remote-dokuwiki"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "cookie_store 0.21.1",
