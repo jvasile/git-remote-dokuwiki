@@ -241,18 +241,29 @@ pub fn generate<W: Write>(
 
             match client.get_media_versions(&media.id) {
                 Ok(versions) => {
-                    if !versions.is_empty() {
-                        verbosity.debug(&format!("    {} has {} versions", media.id, versions.len()));
-                    }
-                    for ver in versions {
+                    if versions.is_empty() {
+                        // Media exists but has no history (e.g., system files)
+                        // Fall back to current version using the revision from listMedia
                         all_revisions.push(Revision {
                             id: media.id.clone(),
-                            version: ver.version,
-                            author: if ver.author.is_empty() { "unknown".to_string() } else { ver.author },
-                            summary: ver.summary,
-                            revision_type: ver.revision_type,
+                            version: media.revision,
+                            author: if media.author.is_empty() { "unknown".to_string() } else { media.author.clone() },
+                            summary: "current version".to_string(),
+                            revision_type: "C".to_string(),
                             is_media: true,
                         });
+                    } else {
+                        verbosity.debug(&format!("    {} has {} versions", media.id, versions.len()));
+                        for ver in versions {
+                            all_revisions.push(Revision {
+                                id: media.id.clone(),
+                                version: ver.version,
+                                author: if ver.author.is_empty() { "unknown".to_string() } else { ver.author },
+                                summary: ver.summary,
+                                revision_type: ver.revision_type,
+                                is_media: true,
+                            });
+                        }
                     }
                 }
                 Err(e) => {
