@@ -143,11 +143,25 @@ impl RemoteHelper {
 
     fn list<W: Write>(&mut self, out: &mut W) -> Result<()> {
         // DokuWiki doesn't have branches, we simulate a single 'main' branch
-        // Return the SHA from our private ref if we have it
-        if let Some(sha) = self.get_main_sha() {
+        // Check if there are new changes on the wiki since our last fetch
+        let has_new_changes = if let Some(since) = self.get_latest_commit_timestamp() {
+            // Check for changes newer than our last known revision
+            self.client.get_recent_changes(since + 1)
+                .map(|changes| !changes.is_empty())
+                .unwrap_or(false)
+        } else {
+            true // No previous fetch, need to import
+        };
+
+        if has_new_changes {
+            // Return ? to force git to call import
+            writeln!(out, "@refs/heads/main HEAD")?;
+            writeln!(out, "? refs/heads/main")?;
+        } else if let Some(sha) = self.get_main_sha() {
+            // No changes, return the current SHA
             writeln!(out, "{} refs/heads/main", sha)?;
         } else {
-            // Use @<refname> to tell git to determine SHA after import
+            // No SHA yet, need to import
             writeln!(out, "@refs/heads/main HEAD")?;
             writeln!(out, "? refs/heads/main")?;
         }
