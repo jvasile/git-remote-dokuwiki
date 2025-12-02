@@ -207,7 +207,19 @@ impl DokuWikiClient {
         }
 
         let body: JsonRpcResponse = serde_json::from_str(&body_text)
-            .map_err(|e| anyhow!("JSON parse error: {} - body was: {}", e, &body_text[..body_text.len().min(200)]))?;
+            .map_err(|e| {
+                // If we got HTML back, JSON-RPC is probably not enabled
+                if body_text.trim_start().starts_with('<') {
+                    anyhow!(
+                        "Received HTML instead of JSON. The JSON-RPC API may not be enabled.\n\n\
+                        Hint: Enable the remote API in the DokuWiki admin panel under\n\
+                        Configuration Settings > Authentication, or add to conf/local.php:\n\
+                        $conf['remote'] = 1;"
+                    )
+                } else {
+                    anyhow!("JSON parse error: {} - body was: {}", e, &body_text[..body_text.len().min(200)])
+                }
+            })?;
 
         if let Some(error) = body.error {
             // Provide helpful message for common permission errors
