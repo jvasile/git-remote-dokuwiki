@@ -24,18 +24,24 @@ use crate::dokuwiki::DokuWikiClient;
 use crate::protocol::{parse_command, Command};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_HASH: &str = env!("GIT_HASH");
+const BUILD_DATE: &str = env!("BUILD_DATE");
+
+fn version_string() -> String {
+    format!("{} ({} {})", VERSION, GIT_HASH, BUILD_DATE)
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     // Handle --version flag
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
-        println!("git-remote-dokuwiki {}", VERSION);
+        println!("git-remote-dokuwiki {}", version_string());
         return Ok(());
     }
 
     if args.len() < 3 {
-        eprintln!("git-remote-dokuwiki {}", VERSION);
+        eprintln!("git-remote-dokuwiki {}", version_string());
         eprintln!();
         eprintln!("Usage: git-remote-dokuwiki <remote-name> <url>");
         eprintln!("This is a git remote helper and should be invoked by git.");
