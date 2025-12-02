@@ -77,7 +77,12 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
 
     verbosity.debug(&format!("Pushing to {}", target_ref));
 
-    // Only allow pushing to main branch - DokuWiki has no concept of branches
+    // Only allow pushing to main branch - DokuWiki has no concept of branches or tags
+    if target_ref.starts_with("refs/tags/") {
+        return Err(anyhow!(
+            "Cannot push tags. DokuWiki does not support tags."
+        ));
+    }
     if target_ref != "refs/heads/main" {
         return Err(anyhow!(
             "Can only push to main branch. DokuWiki does not support branches."
