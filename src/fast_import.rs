@@ -7,14 +7,15 @@ use std::io::Write;
 use crate::dokuwiki::DokuWikiClient;
 use crate::verbosity::Verbosity;
 
-/// A revision to be imported
+/// A revision to be imported (page or media)
 #[derive(Debug)]
 struct Revision {
-    page_id: String,
-    version: i64, // timestamp
+    id: String,        // page_id or media_id
+    version: i64,      // timestamp
     author: String,
     summary: String,
     revision_type: String, // "E" for edit, "D" for delete, "C" for create
+    is_media: bool,
 }
 
 /// Convert a page ID to a file path
@@ -35,6 +36,22 @@ fn page_id_to_path(page_id: &str, namespace: Option<&str>) -> String {
     path
 }
 
+/// Convert a media ID to a file path in media/ directory
+fn media_id_to_path(media_id: &str, namespace: Option<&str>) -> String {
+    let mut id = media_id.to_string();
+
+    // Strip namespace prefix if present
+    if let Some(ns) = namespace {
+        if let Some(stripped) = id.strip_prefix(&format!("{}:", ns)) {
+            id = stripped.to_string();
+        }
+    }
+
+    // Convert colons to path separators, prepend media/
+    let parts: Vec<&str> = id.split(':').collect();
+    format!("media/{}", parts.join("/"))
+}
+
 /// Generate fast-import stream for wiki history
 /// If `since_timestamp` is provided, only generate commits newer than that timestamp
 /// If `parent_sha` is provided, use it as the parent for the first incremental commit
@@ -50,28 +67,25 @@ pub fn generate<W: Write>(
 ) -> Result<Option<i64>> {
     let mut all_revisions: Vec<Revision> = Vec::new();
 
-    // For incremental fetches, use getRecentChanges to find changed pages,
-    // then getPageVersions to get summaries and types
-    // For full fetches, enumerate all pages and their versions
+    // For incremental fetches, use getRecentChanges to find changed items,
+    // then get history for summaries and types
+    // For full fetches, enumerate all items and their versions
     if let Some(since) = since_timestamp {
         verbosity.info("Checking for recent changes...");
         verbosity.debug(&format!("Looking for revisions > {}", since));
 
-        let changes = client.get_recent_changes(since)?;
+        // Get recent page changes
+        let page_changes = client.get_recent_changes(since)?;
 
-        if changes.is_empty() {
-            verbosity.info("No changes since last fetch");
-            return Ok(None);
+        if !page_changes.is_empty() {
+            verbosity.info(&format!("Found {} recent page changes", page_changes.len()));
         }
 
-        verbosity.info(&format!("Found {} recent changes", changes.len()));
-
-        // Collect unique page IDs from recent changes
-        let mut page_ids: Vec<String> = changes
+        // Collect unique page IDs
+        let mut page_ids: Vec<String> = page_changes
             .iter()
             .filter_map(|c| c.page_id.clone())
             .filter(|page_id| {
-                // Filter by namespace if specified
                 if let Some(ns) = namespace {
                     page_id.starts_with(&format!("{}:", ns)) || page_id == ns
                 } else {
@@ -82,25 +96,21 @@ pub fn generate<W: Write>(
         page_ids.sort();
         page_ids.dedup();
 
-        // For each page, get versions to find summaries and types for revisions > since
+        // For each page, get versions
         for page_id in page_ids {
             verbosity.debug(&format!("  Fetching history for {}...", page_id));
 
             match client.get_page_versions(&page_id) {
                 Ok(versions) => {
                     for ver in versions {
-                        // Only include revisions newer than since
                         if ver.version > since {
                             all_revisions.push(Revision {
-                                page_id: page_id.clone(),
+                                id: page_id.clone(),
                                 version: ver.version,
-                                author: if ver.author.is_empty() {
-                                    "unknown".to_string()
-                                } else {
-                                    ver.author
-                                },
+                                author: if ver.author.is_empty() { "unknown".to_string() } else { ver.author },
                                 summary: ver.summary,
                                 revision_type: ver.revision_type,
+                                is_media: false,
                             });
                         }
                     }
@@ -110,8 +120,60 @@ pub fn generate<W: Write>(
                 }
             }
         }
+
+        // Get recent media changes
+        let media_changes = client.get_recent_media_changes(since)?;
+
+        if !media_changes.is_empty() {
+            verbosity.info(&format!("Found {} recent media changes", media_changes.len()));
+        }
+
+        // Collect unique media IDs
+        let mut media_ids: Vec<String> = media_changes
+            .iter()
+            .map(|m| m.id.clone())
+            .filter(|media_id| {
+                if let Some(ns) = namespace {
+                    media_id.starts_with(&format!("{}:", ns))
+                } else {
+                    true
+                }
+            })
+            .collect();
+        media_ids.sort();
+        media_ids.dedup();
+
+        // For each media, get versions
+        for media_id in media_ids {
+            verbosity.debug(&format!("  Fetching media history for {}...", media_id));
+
+            match client.get_media_versions(&media_id) {
+                Ok(versions) => {
+                    for ver in versions {
+                        if ver.version > since {
+                            all_revisions.push(Revision {
+                                id: media_id.clone(),
+                                version: ver.version,
+                                author: if ver.author.is_empty() { "unknown".to_string() } else { ver.author },
+                                summary: ver.summary,
+                                revision_type: ver.revision_type,
+                                is_media: true,
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not get media history for {}: {}", media_id, e);
+                }
+            }
+        }
+
+        if all_revisions.is_empty() {
+            verbosity.info("No changes since last fetch");
+            return Ok(None);
+        }
     } else {
-        // Full fetch - get all pages and their complete history
+        // Full fetch - get all pages and media with their complete history
         verbosity.info("Fetching page list...");
 
         let pages = if let Some(ns) = namespace {
@@ -123,7 +185,6 @@ pub fn generate<W: Write>(
         verbosity.info(&format!("Found {} pages", pages.len()));
 
         for page in &pages {
-            // Filter by namespace if specified
             if let Some(ns) = namespace {
                 if !page.id.starts_with(&format!("{}:", ns)) && page.id != ns {
                     continue;
@@ -135,35 +196,75 @@ pub fn generate<W: Write>(
             match client.get_page_versions(&page.id) {
                 Ok(versions) => {
                     if !versions.is_empty() {
-                        verbosity.debug(&format!("    {} has {} versions, latest={}", page.id, versions.len(), versions[0].version));
+                        verbosity.debug(&format!("    {} has {} versions", page.id, versions.len()));
                     }
                     for ver in versions {
                         all_revisions.push(Revision {
-                            page_id: page.id.clone(),
+                            id: page.id.clone(),
                             version: ver.version,
-                            author: if ver.author.is_empty() {
-                                "unknown".to_string()
-                            } else {
-                                ver.author
-                            },
+                            author: if ver.author.is_empty() { "unknown".to_string() } else { ver.author },
                             summary: ver.summary,
                             revision_type: ver.revision_type,
+                            is_media: false,
                         });
                     }
                 }
                 Err(e) => {
                     eprintln!("Warning: could not get history for {}: {}", page.id, e);
-                    // Fall back to just current version
                     all_revisions.push(Revision {
-                        page_id: page.id.clone(),
+                        id: page.id.clone(),
                         version: page.revision,
-                        author: if page.author.is_empty() {
-                            "unknown".to_string()
-                        } else {
-                            page.author.clone()
-                        },
+                        author: if page.author.is_empty() { "unknown".to_string() } else { page.author.clone() },
                         summary: "current version".to_string(),
-                        revision_type: "E".to_string(), // Assume edit for fallback
+                        revision_type: "E".to_string(),
+                        is_media: false,
+                    });
+                }
+            }
+        }
+
+        // Fetch media files
+        verbosity.info("Fetching media list...");
+        let media_files = client.get_attachments(namespace.unwrap_or(""))?;
+
+        // Filter by namespace
+        let media_files: Vec<_> = if let Some(ns) = namespace {
+            media_files.into_iter().filter(|m| m.id.starts_with(&format!("{}:", ns))).collect()
+        } else {
+            media_files
+        };
+
+        verbosity.info(&format!("Found {} media files", media_files.len()));
+
+        for media in &media_files {
+            verbosity.debug(&format!("  Fetching media history for {}...", media.id));
+
+            match client.get_media_versions(&media.id) {
+                Ok(versions) => {
+                    if !versions.is_empty() {
+                        verbosity.debug(&format!("    {} has {} versions", media.id, versions.len()));
+                    }
+                    for ver in versions {
+                        all_revisions.push(Revision {
+                            id: media.id.clone(),
+                            version: ver.version,
+                            author: if ver.author.is_empty() { "unknown".to_string() } else { ver.author },
+                            summary: ver.summary,
+                            revision_type: ver.revision_type,
+                            is_media: true,
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not get media history for {}: {}", media.id, e);
+                    // Fall back to current version
+                    all_revisions.push(Revision {
+                        id: media.id.clone(),
+                        version: media.revision,
+                        author: if media.author.is_empty() { "unknown".to_string() } else { media.author.clone() },
+                        summary: "current version".to_string(),
+                        revision_type: "E".to_string(),
+                        is_media: true,
                     });
                 }
             }
@@ -173,20 +274,10 @@ pub fn generate<W: Write>(
     // Sort by timestamp (oldest first)
     all_revisions.sort_by_key(|r| r.version);
 
-    // Filter to only revisions newer than since_timestamp (for full fetches, this is a no-op)
-    let all_revisions: Vec<Revision> = if let Some(since) = since_timestamp {
-        all_revisions
-            .into_iter()
-            .filter(|r| r.version > since)
-            .collect()
-    } else {
-        all_revisions
-    };
-
     verbosity.info(&format!("Found {} total revisions", all_revisions.len()));
 
     if all_revisions.is_empty() {
-        verbosity.info("No new revisions to import");
+        verbosity.info("No revisions to import");
         return Ok(None);
     }
 
@@ -195,15 +286,11 @@ pub fn generate<W: Write>(
     // Group revisions by timestamp
     let mut revisions_by_time: HashMap<i64, Vec<&Revision>> = HashMap::new();
     for rev in &all_revisions {
-        revisions_by_time
-            .entry(rev.version)
-            .or_insert_with(Vec::new)
-            .push(rev);
+        revisions_by_time.entry(rev.version).or_default().push(rev);
     }
 
-    // Track current file contents for each path
-    // This is needed because we need to output the full tree state in each commit
-    let mut current_files: HashMap<String, String> = HashMap::new();
+    // Track current file contents
+    let mut current_files: HashMap<String, Vec<u8>> = HashMap::new();
 
     let mut mark: u64 = 1;
     let mut last_commit_mark: Option<u64> = None;
@@ -216,7 +303,7 @@ pub fn generate<W: Write>(
     for timestamp in timestamps {
         let revs = &revisions_by_time[&timestamp];
 
-        // Collect authors and summaries for this commit
+        // Collect authors and summaries
         let mut authors: Vec<&str> = revs.iter().map(|r| r.author.as_str()).collect();
         authors.sort();
         authors.dedup();
@@ -228,58 +315,63 @@ pub fn generate<W: Write>(
                 if r.summary.is_empty() {
                     None
                 } else {
-                    Some(format!("{}: {}", r.page_id, r.summary))
+                    Some(format!("{}: {}", r.id, r.summary))
                 }
             })
             .collect();
 
         let message = if summaries.is_empty() {
-            let page_ids: Vec<&str> = revs.iter().map(|r| r.page_id.as_str()).collect();
-            if page_ids.len() == 1 {
-                format!("Edit {}", page_ids[0])
+            let ids: Vec<&str> = revs.iter().map(|r| r.id.as_str()).collect();
+            if ids.len() == 1 {
+                format!("Edit {}", ids[0])
             } else {
-                format!("Edit {} pages", page_ids.len())
+                format!("Edit {} items", ids.len())
             }
         } else {
             summaries.join("\n")
         };
 
         // Fetch content for each file at this revision
-        let mut blobs: Vec<(String, u64)> = Vec::new(); // (path, mark)
+        let mut blobs: Vec<(String, u64)> = Vec::new();
         let mut deleted_paths: Vec<String> = Vec::new();
 
         for rev in revs {
-            let path = page_id_to_path(&rev.page_id, namespace);
+            let path = if rev.is_media {
+                media_id_to_path(&rev.id, namespace)
+            } else {
+                page_id_to_path(&rev.id, namespace)
+            };
 
             // Check if this is a delete revision
             if rev.revision_type == "D" {
-                // Page was deleted - record deletion for this commit
                 current_files.remove(&path);
                 deleted_paths.push(path);
                 continue;
             }
 
-            // Fetch content for edit/create revisions
-            match client.get_page_version(&rev.page_id, rev.version) {
-                Ok(content) => {
-                    // Write blob
+            // Fetch content
+            let content_result = if rev.is_media {
+                client.get_attachment_version(&rev.id, rev.version)
+            } else {
+                client.get_page_version(&rev.id, rev.version).map(|s| s.into_bytes())
+            };
+
+            match content_result {
+                Ok(data) => {
                     let blob_mark = mark;
                     mark += 1;
 
                     writeln!(out, "blob")?;
                     writeln!(out, "mark :{}", blob_mark)?;
-                    writeln!(out, "data {}", content.len())?;
-                    write!(out, "{}", content)?;
+                    writeln!(out, "data {}", data.len())?;
+                    out.write_all(&data)?;
                     writeln!(out)?;
 
-                    current_files.insert(path.clone(), content);
+                    current_files.insert(path.clone(), data);
                     blobs.push((path, blob_mark));
                 }
                 Err(e) => {
-                    eprintln!(
-                        "    Warning: could not fetch {}@{}: {}",
-                        rev.page_id, rev.version, e
-                    );
+                    eprintln!("Warning: could not fetch {}@{}: {}", rev.id, rev.version, e);
                 }
             }
         }
@@ -292,7 +384,6 @@ pub fn generate<W: Write>(
         let commit_mark = mark;
         mark += 1;
 
-        // Format email from author
         let email = format!("{}@{}", author.replace(' ', ".").replace(',', ""), wiki_host);
 
         writeln!(out, "commit refs/dokuwiki/origin/heads/main")?;
@@ -306,7 +397,6 @@ pub fn generate<W: Write>(
         if let Some(parent) = last_commit_mark {
             writeln!(out, "from :{}", parent)?;
         } else if let Some(sha) = parent_sha {
-            // First commit in incremental update - parent is existing main SHA
             writeln!(out, "from {}", sha)?;
         }
 

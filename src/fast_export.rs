@@ -48,6 +48,22 @@ fn path_to_page_id(path: &str, namespace: Option<&str>) -> Option<String> {
     }
 }
 
+/// Convert a media file path back to a DokuWiki media ID
+fn path_to_media_id(path: &str, namespace: Option<&str>) -> Option<String> {
+    // Only handle files in media/ directory
+    let path = path.strip_prefix("media/")?;
+
+    // Convert path separators to colons
+    let media_id = path.replace('/', ":");
+
+    // Prepend namespace if specified
+    if let Some(ns) = namespace {
+        Some(format!("{}:{}", ns, media_id))
+    } else {
+        Some(media_id)
+    }
+}
+
 /// Process push by finding changed files and updating the wiki
 /// Consumes the fast-export stream but uses git diff to find actual changes
 pub fn process<I: Iterator<Item = io::Result<String>>>(
@@ -72,7 +88,7 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
 
     // If no commits in the stream, nothing to push - that's OK
     if target_ref.is_empty() {
-        return Ok("refs/dokuwiki/origin/heads/main".to_string());
+        return Ok("refs/heads/main".to_string());
     }
 
     verbosity.debug(&format!("Pushing to {}", target_ref));
@@ -174,11 +190,12 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
             let status = parts[0];
             let path = parts[1];
 
+            // Check if it's a page (.txt file)
             if let Some(page_id) = path_to_page_id(path, namespace) {
                 match status {
                     "D" => {
                         // Delete
-                        verbosity.info(&format!("  Deleting {}...", page_id));
+                        verbosity.info(&format!("  Deleting page {}...", page_id));
                         client.put_page(&page_id, "", &format!("Deleted: {}", message))?;
                     }
                     "A" | "M" => {
@@ -189,12 +206,36 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
 
                         if content_output.status.success() {
                             let content = String::from_utf8_lossy(&content_output.stdout);
-                            verbosity.info(&format!("  Updating {}...", page_id));
+                            verbosity.info(&format!("  Updating page {}...", page_id));
                             client.put_page(&page_id, &content, &message)?;
                         }
                     }
                     _ => {
                         verbosity.debug(&format!("  Skipping {} (status: {})", path, status));
+                    }
+                }
+            }
+            // Check if it's a media file (in media/ directory)
+            else if let Some(media_id) = path_to_media_id(path, namespace) {
+                match status {
+                    "D" => {
+                        // Delete media file
+                        verbosity.info(&format!("  Deleting media {}...", media_id));
+                        client.delete_attachment(&media_id)?;
+                    }
+                    "A" | "M" => {
+                        // Add or modify - get the content from git
+                        let content_output = Command::new("git")
+                            .args(["show", &format!("{}:{}", commit, path)])
+                            .output()?;
+
+                        if content_output.status.success() {
+                            verbosity.info(&format!("  Updating media {}...", media_id));
+                            client.put_attachment(&media_id, &content_output.stdout, true)?;
+                        }
+                    }
+                    _ => {
+                        verbosity.debug(&format!("  Skipping media {} (status: {})", path, status));
                     }
                 }
             }

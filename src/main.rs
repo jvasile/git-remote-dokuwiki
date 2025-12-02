@@ -247,9 +247,10 @@ fn parse_url(url: &str) -> Result<(String, String, Option<String>)> {
     };
 
     // Split host and namespace path
-    let (host, namespace) = if let Some(slash_pos) = rest.find('/') {
-        let host = &rest[..slash_pos];
-        let ns = &rest[slash_pos + 1..];
+    // Support both / and # as namespace separator
+    let (host, namespace) = if let Some(sep_pos) = rest.find(|c| c == '/' || c == '#') {
+        let host = &rest[..sep_pos];
+        let ns = &rest[sep_pos + 1..];
         // Convert path to namespace (slashes to colons)
         let ns = ns.replace('/', ":");
         (host.to_string(), Some(ns))
