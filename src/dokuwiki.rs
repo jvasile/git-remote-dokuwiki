@@ -31,6 +31,7 @@ pub struct PageVersion {
     pub author: String,
     pub summary: String,
     pub size: i64,
+    pub revision_type: String,   // "E" for edit, "D" for delete, "C" for create
 }
 
 /// Custom transport that handles cookies
@@ -405,6 +406,7 @@ impl DokuWikiClient {
                         author,
                         summary: String::new(),
                         size: 0,
+                        revision_type: String::new(), // getRecentChanges doesn't return type
                     });
                 }
             }
@@ -433,6 +435,7 @@ impl DokuWikiClient {
                 let author = get_string(&map, "user").unwrap_or_default();
                 let summary = get_string(&map, "sum").unwrap_or_default();
                 let size = get_int(&map, "size").unwrap_or(0);
+                let revision_type = get_string(&map, "type").unwrap_or_else(|| "E".to_string());
 
                 versions.push(PageVersion {
                     page_id: None,
@@ -440,6 +443,7 @@ impl DokuWikiClient {
                     author,
                     summary,
                     size,
+                    revision_type,
                 });
             }
         }

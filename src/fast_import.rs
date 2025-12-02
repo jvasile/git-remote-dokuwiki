@@ -14,6 +14,7 @@ struct Revision {
     version: i64, // timestamp
     author: String,
     summary: String,
+    revision_type: String, // "E" for edit, "D" for delete, "C" for create
 }
 
 /// Convert a page ID to a file path
@@ -49,7 +50,8 @@ pub fn generate<W: Write>(
 ) -> Result<Option<i64>> {
     let mut all_revisions: Vec<Revision> = Vec::new();
 
-    // For incremental fetches, use getRecentChanges (single API call)
+    // For incremental fetches, use getRecentChanges to find changed pages,
+    // then getPageVersions to get summaries and types
     // For full fetches, enumerate all pages and their versions
     if let Some(since) = since_timestamp {
         verbosity.info("Checking for recent changes...");
@@ -64,25 +66,49 @@ pub fn generate<W: Write>(
 
         verbosity.info(&format!("Found {} recent changes", changes.len()));
 
-        for change in changes {
-            // Filter by namespace if specified
-            let page_id = change.page_id.unwrap_or_default();
-            if let Some(ns) = namespace {
-                if !page_id.starts_with(&format!("{}:", ns)) && page_id != ns {
-                    continue;
+        // Collect unique page IDs from recent changes
+        let mut page_ids: Vec<String> = changes
+            .iter()
+            .filter_map(|c| c.page_id.clone())
+            .filter(|page_id| {
+                // Filter by namespace if specified
+                if let Some(ns) = namespace {
+                    page_id.starts_with(&format!("{}:", ns)) || page_id == ns
+                } else {
+                    true
+                }
+            })
+            .collect();
+        page_ids.sort();
+        page_ids.dedup();
+
+        // For each page, get versions to find summaries and types for revisions > since
+        for page_id in page_ids {
+            verbosity.debug(&format!("  Fetching history for {}...", page_id));
+
+            match client.get_page_versions(&page_id) {
+                Ok(versions) => {
+                    for ver in versions {
+                        // Only include revisions newer than since
+                        if ver.version > since {
+                            all_revisions.push(Revision {
+                                page_id: page_id.clone(),
+                                version: ver.version,
+                                author: if ver.author.is_empty() {
+                                    "unknown".to_string()
+                                } else {
+                                    ver.author
+                                },
+                                summary: ver.summary,
+                                revision_type: ver.revision_type,
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: could not get history for {}: {}", page_id, e);
                 }
             }
-
-            all_revisions.push(Revision {
-                page_id,
-                version: change.version,
-                author: if change.author.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    change.author
-                },
-                summary: change.summary,
-            });
         }
     } else {
         // Full fetch - get all pages and their complete history
@@ -121,6 +147,7 @@ pub fn generate<W: Write>(
                                 ver.author
                             },
                             summary: ver.summary,
+                            revision_type: ver.revision_type,
                         });
                     }
                 }
@@ -136,6 +163,7 @@ pub fn generate<W: Write>(
                             page.author.clone()
                         },
                         summary: "current version".to_string(),
+                        revision_type: "E".to_string(), // Assume edit for fallback
                     });
                 }
             }
@@ -218,29 +246,34 @@ pub fn generate<W: Write>(
 
         // Fetch content for each file at this revision
         let mut blobs: Vec<(String, u64)> = Vec::new(); // (path, mark)
+        let mut deleted_paths: Vec<String> = Vec::new();
 
         for rev in revs {
             let path = page_id_to_path(&rev.page_id, namespace);
 
+            // Check if this is a delete revision
+            if rev.revision_type == "D" {
+                // Page was deleted - record deletion for this commit
+                current_files.remove(&path);
+                deleted_paths.push(path);
+                continue;
+            }
+
+            // Fetch content for edit/create revisions
             match client.get_page_version(&rev.page_id, rev.version) {
                 Ok(content) => {
-                    if content.is_empty() {
-                        // Page was deleted
-                        current_files.remove(&path);
-                    } else {
-                        // Write blob
-                        let blob_mark = mark;
-                        mark += 1;
+                    // Write blob
+                    let blob_mark = mark;
+                    mark += 1;
 
-                        writeln!(out, "blob")?;
-                        writeln!(out, "mark :{}", blob_mark)?;
-                        writeln!(out, "data {}", content.len())?;
-                        write!(out, "{}", content)?;
-                        writeln!(out)?;
+                    writeln!(out, "blob")?;
+                    writeln!(out, "mark :{}", blob_mark)?;
+                    writeln!(out, "data {}", content.len())?;
+                    write!(out, "{}", content)?;
+                    writeln!(out)?;
 
-                        current_files.insert(path.clone(), content);
-                        blobs.push((path, blob_mark));
-                    }
+                    current_files.insert(path.clone(), content);
+                    blobs.push((path, blob_mark));
                 }
                 Err(e) => {
                     eprintln!(
@@ -251,7 +284,7 @@ pub fn generate<W: Write>(
             }
         }
 
-        if blobs.is_empty() {
+        if blobs.is_empty() && deleted_paths.is_empty() {
             continue;
         }
 
@@ -280,6 +313,11 @@ pub fn generate<W: Write>(
         // Write file modifications
         for (path, blob_mark) in &blobs {
             writeln!(out, "M 100644 :{} {}", blob_mark, path)?;
+        }
+
+        // Write file deletions
+        for path in &deleted_paths {
+            writeln!(out, "D {}", path)?;
         }
 
         writeln!(out)?;
