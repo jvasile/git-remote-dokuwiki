@@ -143,8 +143,14 @@ impl RemoteHelper {
 
     fn list<W: Write>(&mut self, out: &mut W) -> Result<()> {
         // DokuWiki doesn't have branches, we simulate a single 'main' branch
-        // Use ? to indicate we don't know the SHA yet (git will figure it out from import)
-        writeln!(out, "? refs/heads/main")?;
+        // Return the SHA from our private ref if we have it
+        if let Some(sha) = self.get_main_sha() {
+            writeln!(out, "{} refs/heads/main", sha)?;
+        } else {
+            // Use @<refname> to tell git to determine SHA after import
+            writeln!(out, "@refs/heads/main HEAD")?;
+            writeln!(out, "? refs/heads/main")?;
+        }
         writeln!(out)?;
         Ok(())
     }
