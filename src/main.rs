@@ -110,6 +110,7 @@ struct RemoteHelper {
     imported: bool,
     verbosity: Verbosity,
     depth: Option<u32>,
+    dry_run: bool,
 }
 
 impl RemoteHelper {
@@ -119,7 +120,7 @@ impl RemoteHelper {
         let mut client = DokuWikiClient::new(&wiki_url, &user, verbosity)?;
         client.ensure_authenticated()?;
 
-        Ok(Self { client, namespace, extension, imported: false, verbosity, depth: None })
+        Ok(Self { client, namespace, extension, imported: false, verbosity, depth: None, dry_run: false })
     }
 
     fn capabilities<W: Write>(&self, out: &mut W) -> Result<()> {
@@ -143,6 +144,12 @@ impl RemoteHelper {
             "depth" => {
                 if let Ok(d) = value.parse::<u32>() {
                     self.depth = Some(d);
+                }
+                writeln!(out, "ok")?;
+            }
+            "dry-run" => {
+                if value == "true" {
+                    self.dry_run = true;
                 }
                 writeln!(out, "ok")?;
             }
@@ -277,7 +284,7 @@ impl RemoteHelper {
         }
 
         // Process the push and get the ref that was pushed
-        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, reader)?;
+        let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, self.dry_run, reader)?;
 
         // Tell git the push succeeded
         writeln!(out, "ok {}", pushed_ref)?;

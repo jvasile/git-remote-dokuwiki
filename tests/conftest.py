@@ -12,9 +12,12 @@ import pytest
 import requests
 
 TESTS_DIR = Path(__file__).parent
+PROJECT_DIR = TESTS_DIR.parent
 DOCKER_COMPOSE_FILE = TESTS_DIR / "docker-compose.yml"
 CONFIG_DIR = TESTS_DIR / "config"
 WIKI_URL = "http://localhost:8080"
+# Use the debug build from target/debug
+BINARY_DIR = PROJECT_DIR / "target" / "debug"
 
 
 def wait_for_container(timeout=30):
@@ -168,14 +171,22 @@ def limited_credentials():
     return {"user": "limited", "password": "limited123"}
 
 
+def _get_env_with_binary(password):
+    """Get environment with password and binary path set."""
+    env = os.environ.copy()
+    env["DOKUWIKI_PASSWORD"] = password
+    # Prepend our binary directory to PATH
+    env["PATH"] = f"{BINARY_DIR}:{env.get('PATH', '')}"
+    return env
+
+
 def clone_wiki(repo_dir, user, password, namespace=None, host="localhost:8080", depth=None):
     """Clone a wiki namespace to a directory."""
     url = f"dokuwiki::{user}@{host}"
     if namespace:
         url += f"/{namespace}"
 
-    env = os.environ.copy()
-    env["DOKUWIKI_PASSWORD"] = password
+    env = _get_env_with_binary(password)
 
     cmd = ["git", "clone"]
     if depth is not None:
@@ -193,8 +204,7 @@ def clone_wiki(repo_dir, user, password, namespace=None, host="localhost:8080", 
 
 def git_push(repo_dir, password):
     """Push changes from a repo."""
-    env = os.environ.copy()
-    env["DOKUWIKI_PASSWORD"] = password
+    env = _get_env_with_binary(password)
 
     result = subprocess.run(
         ["git", "push"],
@@ -208,11 +218,24 @@ def git_push(repo_dir, password):
 
 def git_pull(repo_dir, password):
     """Pull changes to a repo."""
-    env = os.environ.copy()
-    env["DOKUWIKI_PASSWORD"] = password
+    env = _get_env_with_binary(password)
 
     result = subprocess.run(
         ["git", "pull"],
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True
+    )
+    return result
+
+
+def git_push_dry_run(repo_dir, password):
+    """Dry-run push from a repo."""
+    env = _get_env_with_binary(password)
+
+    result = subprocess.run(
+        ["git", "push", "--dry-run"],
         cwd=repo_dir,
         env=env,
         capture_output=True,

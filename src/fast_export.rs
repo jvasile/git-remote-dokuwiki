@@ -99,6 +99,7 @@ pub fn process<R: BufRead>(
     namespace: Option<&str>,
     extension: &str,
     verbosity: Verbosity,
+    dry_run: bool,
     reader: &mut R,
 ) -> Result<String> {
     // We need to consume the fast-export stream even though we won't use it directly
@@ -203,11 +204,19 @@ pub fn process<R: BufRead>(
         .collect();
 
     if commits.is_empty() {
-        verbosity.info("No commits to push");
+        if dry_run {
+            eprintln!("Nothing to push");
+        } else {
+            verbosity.info("No commits to push");
+        }
         return Ok(target_ref);
     }
 
-    verbosity.info(&format!("Pushing {} commit(s)", commits.len()));
+    if dry_run {
+        eprintln!("Would push {} commit(s)", commits.len());
+    } else {
+        verbosity.info(&format!("Pushing {} commit(s)", commits.len()));
+    }
 
     // Track what we're pushing for error recovery
     let mut pending_items: Vec<String> = Vec::new();
@@ -300,29 +309,38 @@ pub fn process<R: BufRead>(
                     _ => continue,
                 };
 
-                let result = match status {
-                    "D" => {
-                        verbosity.info(&format!("  Deleting page {}...", page_id));
-                        client.put_page(&page_id, "", &format!("Deleted: {}", message))
-                    }
-                    "A" | "M" => {
-                        let content_output = Command::new("git")
-                            .args(["show", &format!("{}:{}", commit, path)])
-                            .output()?;
-
-                        if content_output.status.success() {
-                            let content = String::from_utf8_lossy(&content_output.stdout);
-                            verbosity.info(&format!("  Updating page {}...", page_id));
-                            client.put_page(&page_id, &content, &message)
-                        } else {
-                            continue;
+                if dry_run {
+                    let action = match status {
+                        "D" => "Would delete",
+                        "A" | "M" => "Would update",
+                        _ => continue,
+                    };
+                    eprintln!("  {} page {}", action, page_id);
+                } else {
+                    let result = match status {
+                        "D" => {
+                            verbosity.info(&format!("  Deleting page {}...", page_id));
+                            client.put_page(&page_id, "", &format!("Deleted: {}", message))
                         }
-                    }
-                    _ => continue,
-                };
+                        "A" | "M" => {
+                            let content_output = Command::new("git")
+                                .args(["show", &format!("{}:{}", commit, path)])
+                                .output()?;
 
-                if let Err(e) = result {
-                    return Err(push_error(&item_desc, e, &pushed_items, &pending_items));
+                            if content_output.status.success() {
+                                let content = String::from_utf8_lossy(&content_output.stdout);
+                                verbosity.info(&format!("  Updating page {}...", page_id));
+                                client.put_page(&page_id, &content, &message)
+                            } else {
+                                continue;
+                            }
+                        }
+                        _ => continue,
+                    };
+
+                    if let Err(e) = result {
+                        return Err(push_error(&item_desc, e, &pushed_items, &pending_items));
+                    }
                 }
 
                 // Move from pending to pushed
@@ -342,28 +360,37 @@ pub fn process<R: BufRead>(
                     _ => continue,
                 };
 
-                let result = match status {
-                    "D" => {
-                        verbosity.info(&format!("  Deleting media {}...", media_id));
-                        client.delete_attachment(&media_id)
-                    }
-                    "A" | "M" => {
-                        let content_output = Command::new("git")
-                            .args(["show", &format!("{}:{}", commit, path)])
-                            .output()?;
-
-                        if content_output.status.success() {
-                            verbosity.info(&format!("  Updating media {}...", media_id));
-                            client.put_attachment(&media_id, &content_output.stdout, true)
-                        } else {
-                            continue;
+                if dry_run {
+                    let action = match status {
+                        "D" => "Would delete",
+                        "A" | "M" => "Would update",
+                        _ => continue,
+                    };
+                    eprintln!("  {} media {}", action, media_id);
+                } else {
+                    let result = match status {
+                        "D" => {
+                            verbosity.info(&format!("  Deleting media {}...", media_id));
+                            client.delete_attachment(&media_id)
                         }
-                    }
-                    _ => continue,
-                };
+                        "A" | "M" => {
+                            let content_output = Command::new("git")
+                                .args(["show", &format!("{}:{}", commit, path)])
+                                .output()?;
 
-                if let Err(e) = result {
-                    return Err(push_error(&item_desc, e, &pushed_items, &pending_items));
+                            if content_output.status.success() {
+                                verbosity.info(&format!("  Updating media {}...", media_id));
+                                client.put_attachment(&media_id, &content_output.stdout, true)
+                            } else {
+                                continue;
+                            }
+                        }
+                        _ => continue,
+                    };
+
+                    if let Err(e) = result {
+                        return Err(push_error(&item_desc, e, &pushed_items, &pending_items));
+                    }
                 }
 
                 // Move from pending to pushed
@@ -377,9 +404,12 @@ pub fn process<R: BufRead>(
 
     // Update last revision timestamp to the wiki's latest timestamp
     // This ensures our own changes don't appear as "new remote changes" on next push
-    if let Ok(changes) = client.get_recent_changes(0) {
-        if let Some(latest) = changes.last() {
-            set_last_revision_timestamp(latest.version);
+    // Skip this in dry-run mode since we didn't actually push anything
+    if !dry_run {
+        if let Ok(changes) = client.get_recent_changes(0) {
+            if let Some(latest) = changes.last() {
+                set_last_revision_timestamp(latest.version);
+            }
         }
     }
 

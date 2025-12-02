@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 
-from conftest import clone_wiki, git_push, git_pull
+from conftest import clone_wiki, git_push, git_pull, git_push_dry_run
 
 
 class TestRootOperations:
@@ -220,3 +220,79 @@ class TestRootOperations:
         )
         commits = [line for line in log_result.stdout.strip().split('\n') if line]
         assert len(commits) == 1, f"Expected 1 commit, got {len(commits)}: {commits}"
+
+    def test_dry_run_push(self, docker_wiki, tmp_path, admin_credentials):
+        """Test that --dry-run shows what would be pushed without pushing."""
+        # Use a unique namespace to avoid conflicts with other tests
+        namespace = f"dryrun_{uuid.uuid4().hex[:8]}"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        # First create a page in the namespace via API so we can clone it
+        session = requests.Session()
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "dokuwiki.login",
+                "params": {"user": "admin", "pass": "admin123"},
+                "id": 1
+            }
+        )
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "core.savePage",
+                "params": {
+                    "page": f"{namespace}:start",
+                    "text": "====== Start ======\n\nInitial page.\n",
+                    "summary": "Create namespace"
+                },
+                "id": 2
+            }
+        )
+
+        # Clone
+        result = clone_wiki(
+            repo_dir,
+            admin_credentials["user"],
+            admin_credentials["password"],
+            namespace=namespace
+        )
+        assert result.returncode == 0, f"Clone failed: {result.stderr}"
+
+        # Create a new page
+        page_name = "testpage"
+        page_path = repo_dir / f"{page_name}.md"
+        page_path.write_text("====== Dry Run Test ======\n\nThis should not be pushed.\n")
+
+        # Git add and commit
+        subprocess.run(["git", "add", f"{page_name}.md"], cwd=repo_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Add dry run test page"],
+            cwd=repo_dir,
+            check=True
+        )
+
+        # Dry-run push
+        result = git_push_dry_run(repo_dir, admin_credentials["password"])
+        assert result.returncode == 0, f"Dry-run push failed: {result.stderr}"
+
+        # Check output shows what would be pushed
+        assert "Would push" in result.stderr, f"Expected 'Would push' in output: {result.stderr}"
+        assert "Would update" in result.stderr, f"Expected 'Would update' in output: {result.stderr}"
+
+        # Verify page was NOT actually created on the wiki
+        full_page_id = f"{namespace}:{page_name}"
+        resp = session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "core.getPage",
+                "params": {"page": full_page_id},
+                "id": 3
+            }
+        )
+        page_content = resp.json().get("result", "")
+        assert page_content == "", f"Page should not exist on wiki but got: {page_content}"
