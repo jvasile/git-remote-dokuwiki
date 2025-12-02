@@ -22,9 +22,9 @@ const MIN_API_VERSION: i64 = 14;
 pub struct PageInfo {
     pub id: String,
     pub revision: i64,
-    pub last_modified: i64,
+    pub _last_modified: i64,
     pub author: String,
-    pub size: i64,
+    pub _size: i64,
 }
 
 /// A single revision of a page
@@ -34,7 +34,7 @@ pub struct PageVersion {
     pub version: i64,
     pub author: String,
     pub summary: String,
-    pub size: i64,
+    pub _size: i64,
     pub revision_type: String, // "E" for edit, "D" for delete, "C" for create
 }
 
@@ -42,7 +42,7 @@ pub struct PageVersion {
 #[derive(Debug, Clone)]
 pub struct MediaInfo {
     pub id: String,
-    pub size: i64,
+    pub _size: i64,
     pub revision: i64,
     pub author: String,
 }
@@ -426,7 +426,7 @@ impl DokuWikiClient {
                     version,
                     author,
                     summary,
-                    size: 0,
+                    _size: 0,
                     revision_type,
                 });
             }
@@ -448,7 +448,7 @@ impl DokuWikiClient {
             let version = item["revision"].as_i64().unwrap_or(0);
             let author = item["author"].as_str().unwrap_or_default().to_string();
             let summary = item["summary"].as_str().unwrap_or_default().to_string();
-            let size = item["sizechange"].as_i64().unwrap_or(0);
+            let _size = item["sizechange"].as_i64().unwrap_or(0);
             let revision_type = item["type"].as_str().unwrap_or("E").to_string();
 
             versions.push(PageVersion {
@@ -456,7 +456,7 @@ impl DokuWikiClient {
                 version,
                 author,
                 summary,
-                size,
+                _size,
                 revision_type,
             });
         }
@@ -470,15 +470,6 @@ impl DokuWikiClient {
             "page": page_id,
             "rev": version
         }))?;
-
-        result.as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!("Expected string from getPage"))
-    }
-
-    /// Get current page content
-    pub fn get_page(&mut self, page_id: &str) -> Result<String> {
-        let result = self.call("core.getPage", json!({ "page": page_id }))?;
 
         result.as_str()
             .map(|s| s.to_string())
@@ -507,14 +498,14 @@ impl DokuWikiClient {
         let mut media = Vec::new();
         for item in arr {
             let id = item["id"].as_str().unwrap_or_default().to_string();
-            let size = item["size"].as_i64().unwrap_or(0);
+            let _size = item["size"].as_i64().unwrap_or(0);
             let revision = item["rev"].as_i64().unwrap_or(0);
             let author = item["user"].as_str().unwrap_or_default().to_string();
 
             if !id.is_empty() {
                 media.push(MediaInfo {
                     id,
-                    size,
+                    _size,
                     revision,
                     author,
                 });
@@ -535,14 +526,14 @@ impl DokuWikiClient {
         let mut media = Vec::new();
         for item in arr {
             let id = item["id"].as_str().unwrap_or_default().to_string();
-            let size = item["size"].as_i64().unwrap_or(0);
+            let _size = item["size"].as_i64().unwrap_or(0);
             let revision = item["revision"].as_i64().unwrap_or(0);
             let author = item["author"].as_str().unwrap_or_default().to_string();
 
             if !id.is_empty() {
                 media.push(MediaInfo {
                     id,
-                    size,
+                    _size,
                     revision,
                     author,
                 });
@@ -576,17 +567,6 @@ impl DokuWikiClient {
         }
 
         Ok(versions)
-    }
-
-    /// Get media file content (current version)
-    pub fn get_attachment(&mut self, media_id: &str) -> Result<Vec<u8>> {
-        let result = self.call("core.getMedia", json!({ "media": media_id }))?;
-
-        let base64_data = result.as_str()
-            .ok_or_else(|| anyhow!("Expected base64 string from getMedia"))?;
-
-        BASE64.decode(base64_data)
-            .map_err(|e| anyhow!("Failed to decode base64: {}", e))
     }
 
     /// Get media file content at a specific version
@@ -652,17 +632,17 @@ fn parse_page_list(result: &Value) -> Result<Vec<PageInfo>> {
     for item in arr {
         let id = item["id"].as_str().unwrap_or_default().to_string();
         let revision = item["rev"].as_i64().unwrap_or(0);
-        let last_modified = item["mtime"].as_i64().unwrap_or(0);
+        let _last_modified = item["mtime"].as_i64().unwrap_or(0);
         let author = item["user"].as_str().unwrap_or_default().to_string();
-        let size = item["size"].as_i64().unwrap_or(0);
+        let _size = item["size"].as_i64().unwrap_or(0);
 
         if !id.is_empty() {
             pages.push(PageInfo {
                 id,
                 revision,
-                last_modified,
+                _last_modified,
                 author,
-                size,
+                _size,
             });
         }
     }

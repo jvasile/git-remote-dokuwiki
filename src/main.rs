@@ -177,7 +177,7 @@ impl RemoteHelper {
         Ok(())
     }
 
-    fn import<W: Write>(&mut self, ref_name: &str, out: &mut W) -> Result<()> {
+    fn import<W: Write>(&mut self, _ref_name: &str, out: &mut W) -> Result<()> {
         if self.imported {
             return Ok(());
         }
