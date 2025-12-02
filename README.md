@@ -3,6 +3,11 @@
 A git remote helper that allows you to use git to interact with a DokuWiki.  You
 can fetch, edit, and push, just like a real git repo.
 
+Perhaps you've heard of a [git-backed dokuwiki](https://www.dokuwiki.org/plugin:gitbacked).
+This is the opposite: a dokuwiki-backed git repo.  It lets you interact with
+your wiki via a git clone.  This is especially useful when moving or renaming a
+page.
+
 ## Installation
 
 ```bash
@@ -10,6 +15,8 @@ cargo install --path .
 ```
 
 The binary must be named `git-remote-dokuwiki` and be in your PATH for git to find it.
+
+Alternatively, there are [releases in the GitHub page](https://github.com/jvasile/git-remote-dokuwiki/releases).  Grab a .deb or .rpm and install it.  Or take one of the binaries and put it in your path.
 
 ## Usage
 
@@ -79,6 +86,22 @@ DOKUWIKI_VERBOSE=1 git fetch  # same as -v
 DOKUWIKI_VERBOSE=2 git fetch  # same as -vv
 ```
 
+## Using with a git remote
+
+You can add a regular git remote alongside your DokuWiki remote to backup or mirror your wiki content:
+
+```bash
+# Clone from DokuWiki
+git clone dokuwiki::user@wiki.example.com mysite-wiki
+cd mysite-wiki
+
+# Add a git remote for backup
+git remote add github git@github.com:youruser/wiki-backup.git
+git push -u github main
+```
+
+The DokuWiki remote helper only activates for URLs starting with `dokuwiki::`. Regular git remotes (ssh, https) work normally.
+
 ## How it works
 
 - Pages are stored as `.md` files with directory structure matching DokuWiki namespaces
@@ -116,6 +139,10 @@ $conf['remoteuser'] = '@user';        // Allow all logged-in users
 
 Options include `@user` (any authenticated user), `@admin` (admins only), or specific usernames.
 
+## See Also
+
+ * [Gitbacked](https://www.dokuwiki.org/plugin:gitbacked) - if all you want to
+   do is mirror your wiki to a git repo, use this. It is one-way sync.
 ## License
 
 AGPL-3.0
