@@ -344,12 +344,13 @@ pub fn process<I: Iterator<Item = io::Result<String>>>(
         }
     }
 
-    // Update last revision timestamp so future pushes don't see our changes as conflicts
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    set_last_revision_timestamp(now);
+    // Update last revision timestamp to the wiki's latest timestamp
+    // This ensures our own changes don't appear as "new remote changes" on next push
+    if let Ok(changes) = client.get_recent_changes(0) {
+        if let Some(latest) = changes.last() {
+            set_last_revision_timestamp(latest.version);
+        }
+    }
 
     Ok(target_ref)
 }
