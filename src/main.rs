@@ -104,6 +104,7 @@ struct RemoteHelper {
     extension: String,
     imported: bool,
     verbosity: Verbosity,
+    depth: Option<u32>,
 }
 
 impl RemoteHelper {
@@ -113,7 +114,7 @@ impl RemoteHelper {
         let mut client = DokuWikiClient::new(&wiki_url, &user, verbosity)?;
         client.ensure_authenticated()?;
 
-        Ok(Self { client, namespace, extension, imported: false, verbosity })
+        Ok(Self { client, namespace, extension, imported: false, verbosity, depth: None })
     }
 
     fn capabilities<W: Write>(&self, out: &mut W) -> Result<()> {
@@ -125,12 +126,18 @@ impl RemoteHelper {
         Ok(())
     }
 
-    fn set_option<W: Write>(&self, name: &str, value: &str, out: &mut W) -> Result<()> {
+    fn set_option(&mut self, name: &str, value: &str, out: &mut impl Write) -> Result<()> {
         match name {
             "verbosity" => {
                 // git sends: no flag=1, -v=2, -vv=3
                 if let Ok(level) = value.parse::<u8>() {
                     self.verbosity.set_level(level);
+                }
+                writeln!(out, "ok")?;
+            }
+            "depth" => {
+                if let Ok(d) = value.parse::<u32>() {
+                    self.depth = Some(d);
                 }
                 writeln!(out, "ok")?;
             }
@@ -180,7 +187,7 @@ impl RemoteHelper {
         let parent_sha = self.get_main_sha();
 
         let wiki_host = self.client.wiki_host().to_string();
-        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), &wiki_host, &self.extension, self.verbosity, out)?;
+        let latest_revision = fast_import::generate(&mut self.client, self.namespace.as_deref(), since_timestamp, parent_sha.as_deref(), &wiki_host, &self.extension, self.depth, self.verbosity, out)?;
 
         // Store the latest revision timestamp for future incremental fetches
         if let Some(ts) = latest_revision {

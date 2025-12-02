@@ -56,6 +56,7 @@ fn media_id_to_path(media_id: &str, namespace: Option<&str>) -> String {
 /// Generate fast-import stream for wiki history
 /// If `since_timestamp` is provided, only generate commits newer than that timestamp
 /// If `parent_sha` is provided, use it as the parent for the first incremental commit
+/// If `depth` is provided, limit the number of revisions per page/media
 /// Returns the latest revision timestamp that was imported, if any
 pub fn generate<W: Write>(
     client: &mut DokuWikiClient,
@@ -64,6 +65,7 @@ pub fn generate<W: Write>(
     parent_sha: Option<&str>,
     wiki_host: &str,
     extension: &str,
+    depth: Option<u32>,
     verbosity: Verbosity,
     out: &mut W,
 ) -> Result<Option<i64>> {
@@ -282,6 +284,25 @@ pub fn generate<W: Write>(
                 }
             }
         }
+    }
+
+    // Apply depth limit if specified - keep only the most recent N revisions per item
+    if let Some(max_depth) = depth {
+        // Group revisions by item ID
+        let mut revisions_by_id: HashMap<String, Vec<Revision>> = HashMap::new();
+        for rev in all_revisions {
+            revisions_by_id.entry(rev.id.clone()).or_default().push(rev);
+        }
+
+        // For each item, sort by version (newest first) and keep only max_depth
+        all_revisions = Vec::new();
+        for (_, mut revs) in revisions_by_id {
+            revs.sort_by_key(|r| std::cmp::Reverse(r.version));
+            revs.truncate(max_depth as usize);
+            all_revisions.extend(revs);
+        }
+
+        verbosity.debug(&format!("Limited to {} revisions per item (depth={})", max_depth, max_depth));
     }
 
     // Sort by timestamp (oldest first)

@@ -40,6 +40,17 @@ git push
 git pull
 ```
 
+### Shallow clone
+
+For a faster clone without full history, use `--depth`:
+
+```bash
+git clone --depth 1 dokuwiki::user@wiki.example.com      # latest revision only
+git clone --depth 5 dokuwiki::user@wiki.example.com      # last 5 revisions per page
+```
+
+This limits the number of revisions fetched per page/media file, significantly reducing clone time for wikis with long histories.
+
 ## Authentication
 
 The tool uses git's credential helper system. On first use, it will prompt for your password and store the session cookie in `.git/dokuwiki-cookies.json`.
