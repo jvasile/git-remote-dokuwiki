@@ -382,9 +382,12 @@ impl DokuWikiClient {
         result.as_i64().ok_or_else(|| anyhow!("Invalid API version response"))
     }
 
-    /// Get list of all pages
+    /// Get list of all pages (recursively, all namespaces)
     pub fn get_all_pages(&mut self) -> Result<Vec<PageInfo>> {
-        let result = self.call("core.listPages", json!({ "namespace": "" }))?;
+        let result = self.call("dokuwiki.getPagelist", json!({
+            "ns": "",
+            "opts": { "depth": 0 }
+        }))?;
         parse_page_list(&result)
     }
 
