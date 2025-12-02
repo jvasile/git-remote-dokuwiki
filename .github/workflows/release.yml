@@ -42,6 +42,20 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ../../../git-remote-dokuwiki-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
 
+      - name: Build .deb package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo install cargo-deb
+          cargo deb --target ${{ matrix.target }} --no-build
+          cp target/${{ matrix.target }}/debian/*.deb .
+
+      - name: Build .rpm package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo install cargo-generate-rpm
+          cargo generate-rpm --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/generate-rpm/*.rpm .
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -52,7 +66,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: git-remote-dokuwiki-${{ matrix.target }}
-          path: git-remote-dokuwiki-${{ matrix.target }}.*
+          path: |
+            git-remote-dokuwiki-${{ matrix.target }}.*
+            *.deb
+            *.rpm
 
   release:
     name: Create Release

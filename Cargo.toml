@@ -39,3 +39,15 @@ dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[package.metadata.deb]
+maintainer = "James Vasile <james@jamesvasile.com>"
+section = "vcs"
+assets = [
+    ["target/release/git-remote-dokuwiki", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/git-remote-dokuwiki", dest = "/usr/bin/git-remote-dokuwiki", mode = "755" },
+]
