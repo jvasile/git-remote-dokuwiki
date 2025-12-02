@@ -4,6 +4,7 @@ Each test uses its own namespace to avoid conflicts.
 """
 
 import subprocess
+import time
 import uuid
 
 import requests
@@ -465,3 +466,112 @@ class TestNamespaceOperations:
         # Verify content
         assert "Nested Root" in (temp_repo / "start.md").read_text()
         assert "Sub Page" in (temp_repo / "subdir" / "page.md").read_text()
+
+    def test_push_conflict_same_file(self, docker_wiki, temp_repo, admin_credentials):
+        """Test push fails when remote has updates to the same file we're pushing."""
+        namespace = unique_namespace()
+
+        # Create initial page
+        create_namespace_page(docker_wiki, namespace, "page1", "====== Page 1 ======\n\nOriginal content.\n")
+
+        # Clone the namespace
+        result = clone_wiki(
+            temp_repo,
+            admin_credentials["user"],
+            admin_credentials["password"],
+            namespace=namespace
+        )
+        assert result.returncode == 0, f"Clone failed: {result.stderr}"
+
+        # Modify the page locally
+        page_path = temp_repo / "page1.md"
+        page_path.write_text("====== Page 1 ======\n\nLocal modification.\n")
+        subprocess.run(["git", "add", "page1.md"], cwd=temp_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Local edit"], cwd=temp_repo, check=True)
+
+        # Wait to ensure wiki edit has a later timestamp
+        time.sleep(1)
+
+        # Meanwhile, modify the same page on the wiki via API
+        session = requests.Session()
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "dokuwiki.login",
+                "params": {"user": "admin", "pass": "admin123"},
+                "id": 1
+            }
+        )
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "core.savePage",
+                "params": {
+                    "page": f"{namespace}:page1",
+                    "text": "====== Page 1 ======\n\nRemote modification.\n",
+                    "summary": "Remote edit"
+                },
+                "id": 2
+            }
+        )
+
+        # Push should fail because remote has newer changes
+        result = git_push(temp_repo, admin_credentials["password"])
+        assert result.returncode != 0, f"Push should have failed but succeeded: {result.stdout}"
+
+    def test_push_conflict_different_file(self, docker_wiki, temp_repo, admin_credentials):
+        """Test push fails when remote has updates to a different file."""
+        namespace = unique_namespace()
+
+        # Create two pages
+        create_namespace_page(docker_wiki, namespace, "page1", "====== Page 1 ======\n\nContent.\n")
+        create_namespace_page(docker_wiki, namespace, "page2", "====== Page 2 ======\n\nContent.\n")
+
+        # Clone the namespace
+        result = clone_wiki(
+            temp_repo,
+            admin_credentials["user"],
+            admin_credentials["password"],
+            namespace=namespace
+        )
+        assert result.returncode == 0, f"Clone failed: {result.stderr}"
+
+        # Modify page1 locally
+        page_path = temp_repo / "page1.md"
+        page_path.write_text("====== Page 1 ======\n\nLocal modification.\n")
+        subprocess.run(["git", "add", "page1.md"], cwd=temp_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Local edit to page1"], cwd=temp_repo, check=True)
+
+        # Wait to ensure wiki edit has a later timestamp
+        time.sleep(1)
+
+        # Meanwhile, modify page2 on the wiki via API
+        session = requests.Session()
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "dokuwiki.login",
+                "params": {"user": "admin", "pass": "admin123"},
+                "id": 1
+            }
+        )
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "core.savePage",
+                "params": {
+                    "page": f"{namespace}:page2",
+                    "text": "====== Page 2 ======\n\nRemote modification.\n",
+                    "summary": "Remote edit to page2"
+                },
+                "id": 2
+            }
+        )
+
+        # Push should fail because remote has newer changes (even to different file)
+        result = git_push(temp_repo, admin_credentials["password"])
+        assert result.returncode != 0, f"Push should have failed but succeeded: {result.stdout}"

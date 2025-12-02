@@ -248,6 +248,34 @@ impl RemoteHelper {
     ) -> Result<()> {
         self.verbosity.info("Exporting to wiki...");
 
+        // Check if remote has changes we haven't fetched
+        // This prevents overwriting remote changes (non-fast-forward)
+        if let Some(since) = self.get_latest_commit_timestamp() {
+            let has_remote_changes = self.client.get_recent_changes(since + 1)
+                .map(|changes| !changes.is_empty())
+                .unwrap_or(false);
+
+            if has_remote_changes {
+                eprintln!("error: failed to push some refs");
+                eprintln!("hint: Updates were rejected because the remote contains work that you do not");
+                eprintln!("hint: have locally. This is usually caused by another repository pushing to");
+                eprintln!("hint: the same ref. If you want to integrate the remote changes, use");
+                eprintln!("hint: 'git pull' before pushing again.");
+                // Read and discard the input to avoid broken pipe
+                let mut discard = String::new();
+                while reader.read_line(&mut discard).unwrap_or(0) > 0 {
+                    if discard.trim() == "done" {
+                        break;
+                    }
+                    discard.clear();
+                }
+                // Signal failure to git
+                writeln!(out, "error refs/heads/main non-fast-forward")?;
+                writeln!(out)?;
+                return Ok(());
+            }
+        }
+
         // Process the push and get the ref that was pushed
         let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, reader)?;
 
