@@ -1,0 +1,16 @@
+services:
+  dokuwiki:
+    image: dokuwiki/dokuwiki:stable
+    ports:
+      - "8080:8080"
+    volumes:
+      - dokuwiki_storage:/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  dokuwiki_storage:

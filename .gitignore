@@ -3,3 +3,5 @@ CLAUDE.md
 /.claude
 CLAUDE.local.md
 .local.envrc
+__pycache__
+**/__pycache__
