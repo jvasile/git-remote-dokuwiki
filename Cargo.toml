@@ -1,6 +1,6 @@
 [package]
 name = "git-remote-dokuwiki"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Git remote helper for DokuWiki"
 license = "AGPL-3.0"
@@ -11,13 +11,15 @@ name = "git-remote-dokuwiki"
 path = "src/main.rs"
 
 [dependencies]
-# HTTP and XML-RPC
-reqwest = { version = "0.11", features = ["blocking", "cookies"] }
-xmlrpc = "0.15"
+# HTTP
+reqwest = { version = "0.11", features = ["blocking", "json"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Base64 encoding for media files
+base64 = "0.22"
 
 # URL parsing
 url = "2.5"
@@ -34,7 +36,6 @@ rpassword = "7.3"
 
 # Home directory
 dirs = "5.0"
-iso8601 = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"
