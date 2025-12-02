@@ -398,3 +398,70 @@ class TestNamespaceOperations:
 
         # Verify content
         assert "Level 3" in (temp_repo / "level1" / "level2" / "level3" / "page3.md").read_text()
+
+    def test_clone_deeply_nested_namespace_url(self, docker_wiki, temp_repo, admin_credentials):
+        """Test cloning a deeply nested namespace via URL (e.g., user@wiki/ns1/ns2/ns3)."""
+        # Create a unique base namespace with nested sub-namespaces
+        base = unique_namespace()
+        nested_ns = f"{base}:level1:level2:level3"
+
+        # Create pages at the target namespace and below via API
+        session = requests.Session()
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "dokuwiki.login",
+                "params": {"user": "admin", "pass": "admin123"},
+                "id": 1
+            }
+        )
+
+        # Create page at the nested namespace root
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "core.savePage",
+                "params": {
+                    "page": f"{nested_ns}:start",
+                    "text": "====== Nested Root ======\n\nRoot of nested clone.\n",
+                    "summary": "Create nested root"
+                },
+                "id": 2
+            }
+        )
+
+        # Create a page one level deeper
+        session.post(
+            f"{docker_wiki}/lib/exe/jsonrpc.php",
+            json={
+                "jsonrpc": "2.0",
+                "method": "core.savePage",
+                "params": {
+                    "page": f"{nested_ns}:subdir:page",
+                    "text": "====== Sub Page ======\n\nPage in subdirectory.\n",
+                    "summary": "Create sub page"
+                },
+                "id": 3
+            }
+        )
+
+        # Clone the deeply nested namespace using slash-separated path in URL
+        # This tests: dokuwiki::user@host/ns1/ns2/ns3/ns4
+        namespace_path = f"{base}/level1/level2/level3"
+        result = clone_wiki(
+            temp_repo,
+            admin_credentials["user"],
+            admin_credentials["password"],
+            namespace=namespace_path
+        )
+        assert result.returncode == 0, f"Clone failed: {result.stderr}"
+
+        # Verify we got the pages (without namespace prefix in filenames)
+        assert (temp_repo / "start.md").exists(), "Nested root page not found"
+        assert (temp_repo / "subdir" / "page.md").exists(), "Sub page not found"
+
+        # Verify content
+        assert "Nested Root" in (temp_repo / "start.md").read_text()
+        assert "Sub Page" in (temp_repo / "subdir" / "page.md").read_text()
