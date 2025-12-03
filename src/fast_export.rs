@@ -94,6 +94,7 @@ fn path_to_media_id(path: &str, namespace: Option<&str>) -> Option<String> {
 
 /// Process push by finding changed files and updating the wiki
 /// Consumes the fast-export stream but uses git diff to find actual changes
+/// Returns Some(ref) if something was pushed, None if nothing to push
 pub fn process<R: BufRead>(
     client: &mut DokuWikiClient,
     namespace: Option<&str>,
@@ -101,7 +102,7 @@ pub fn process<R: BufRead>(
     verbosity: Verbosity,
     dry_run: bool,
     reader: &mut R,
-) -> Result<String> {
+) -> Result<Option<String>> {
     // We need to consume the fast-export stream even though we won't use it directly
     // Parse it to find the ref being pushed
     // The stream contains binary blob data, so we need to handle it carefully
@@ -133,9 +134,9 @@ pub fn process<R: BufRead>(
         // Consume but ignore other lines
     }
 
-    // If no commits in the stream, nothing to push - that's OK
+    // If no commits in the stream, nothing to push
     if target_ref.is_empty() {
-        return Ok("refs/heads/main".to_string());
+        return Ok(None);
     }
 
     verbosity.debug(&format!("Pushing to {}", target_ref));
@@ -209,7 +210,7 @@ pub fn process<R: BufRead>(
         } else {
             verbosity.info("No commits to push");
         }
-        return Ok(target_ref);
+        return Ok(None);
     }
 
     if dry_run {
@@ -413,5 +414,5 @@ pub fn process<R: BufRead>(
         }
     }
 
-    Ok(target_ref)
+    Ok(Some(target_ref))
 }

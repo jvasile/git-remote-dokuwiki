@@ -292,8 +292,10 @@ impl RemoteHelper {
         // Process the push and get the ref that was pushed
         let pushed_ref = fast_export::process(&mut self.client, self.namespace.as_deref(), &self.extension, self.verbosity, self.dry_run, reader)?;
 
-        // Tell git the push succeeded
-        writeln!(out, "ok {}", pushed_ref)?;
+        // Tell git the push succeeded (only if something was actually pushed)
+        if let Some(ref_name) = pushed_ref {
+            writeln!(out, "ok {}", ref_name)?;
+        }
         writeln!(out)?;
         Ok(())
     }
