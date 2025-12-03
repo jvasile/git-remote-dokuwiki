@@ -1,6 +1,6 @@
 [package]
 name = "git-remote-dokuwiki"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Git remote helper for DokuWiki"
 license = "AGPL-3.0"
