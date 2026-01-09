@@ -5,7 +5,7 @@ can fetch, edit, and push, just like a real git repo.
 
 Perhaps you've heard of a [git-backed dokuwiki](https://www.dokuwiki.org/plugin:gitbacked).
 This is the opposite: a dokuwiki-backed git repo.  It lets you interact with
-your wiki via a git clone.  This is especially useful when moving or renaming a
+your wiki via a git clone by turning your dokuwiki into a git remote.  This is especially useful when moving or renaming a
 page.
 
 ## Installation
