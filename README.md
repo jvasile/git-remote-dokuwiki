@@ -10,6 +10,12 @@ page.
 
 ## Installation
 
+This is like any other git extension.  Git is structured like a subtask runner.
+When you invoke `git foo bar baz`, it takes "foo" as a command.  It looks for an
+executable on your path namd `git-foo` and runs it, passing "bar" and "baz" as
+parameters.  Installation is as easy as adding the binary anywhere on your
+PATH.
+
 ```bash
 cargo install --path .
 ```
