@@ -5,3 +5,4 @@ CLAUDE.local.md
 .local.envrc
 __pycache__
 **/__pycache__
+.env.local.rc
