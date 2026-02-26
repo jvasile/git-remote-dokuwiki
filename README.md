@@ -68,7 +68,21 @@ This limits the number of revisions fetched per page/media file, significantly r
 
 The tool uses git's credential helper system. On first use, it will prompt for your password and store the session cookie in `.git/dokuwiki-cookies.txt` (Netscape cookie format). This cookie file can be used by other tools that support Netscape cookies, such as `curl -b`.
 
-You can also set the `DOKUWIKI_PASSWORD` environment variable.
+You can also set the `DOKUWIKI_PASSWORD` environment variable.  If you have
+[pass](https://www.passwordstore.org/), the [kv
+extension](https://code.librehq.com/ots/ots-tools/-/raw/main/kv.bash?ref_type=heads) to pass, and [direnv](https://direnv.net/) loading a .env file, you could do something like:
+
+`DOKUWIKI_PASSWORD=$(pass kv dokuwiki-pass pass/encrypted/file)`
+
+In that case, `~/.password-store/pass/encrypted/file.gpg` might include
+something like this when unencrypted:
+
+```
+a first line we ignore for now
+email: me@example.com
+
+dokuwiki-pass: hu43g[9hug5hudsa;lk32
+```
 
 To use a cookie file from a different location (e.g., to share authentication between repos):
 
