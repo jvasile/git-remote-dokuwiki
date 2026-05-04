@@ -42,6 +42,7 @@ tempfile = "3.10"
 
 [package.metadata.deb]
 maintainer = "James Vasile <james@jamesvasile.com>"
+revision = ""
 section = "vcs"
 assets = [
     ["target/release/git-remote-dokuwiki", "usr/bin/", "755"],
